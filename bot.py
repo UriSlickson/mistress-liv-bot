@@ -493,7 +493,8 @@ class MistressLIVBot(commands.Bot):
                 "`/mywagers` - View your active wagers\n"
                 "`/wagerboard` - Wager leaderboard\n"
                 "`/markwagerpaid` - Mark wager as paid\n"
-                "`/pendingwagers` - View unsettled wagers"
+                "`/pendingwagers` - View unsettled wagers\n"
+                "`/checkscore` - Check game result from MyMadden"
             )
             embed.add_field(name="\ud83c\udfb0 Wagers", value=wager_cmds, inline=True)
             
@@ -521,7 +522,9 @@ class MistressLIVBot(commands.Bot):
                 "`/registerall` - Register all owners\n"
                 "`/setuproles` - Create team roles\n"
                 "`/settlewager` - Manually settle wager\n"
-                "`/parsescore` - Test score parsing"
+                "`/parsescore` - Test score parsing\n"
+                "`/forcecheckwagers` - Force check all wagers\n"
+                "`/checkscore` - Check game from website"
             )
             embed.add_field(name="\ud83d\udd27 Admin Only", value=admin_cmds, inline=False)
             

@@ -1,15 +1,17 @@
 """
 Auto Settlement Cog - Automatically settles wagers based on game results
 Monitors the #scores channel for MyMadden bot messages and auto-settles matching wagers.
+Uses MyMadden website as additional reference for verification.
 """
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 import sqlite3
 import re
 import logging
+import asyncio
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict
 
 logger = logging.getLogger('MistressLIV.AutoSettlement')
 
@@ -46,17 +48,196 @@ ABBR_TO_NAME = {
 }
 
 
+class MyMaddenScraper:
+    """Inline scraper for MyMadden website game results."""
+    
+    BASE_URL = "https://mymadden.com/lg/liv"
+    
+    def __init__(self):
+        self.session = None
+    
+    async def _ensure_session(self):
+        """Ensure aiohttp session exists."""
+        try:
+            import aiohttp
+            if self.session is None or self.session.closed:
+                self.session = aiohttp.ClientSession()
+        except ImportError:
+            logger.warning("aiohttp not installed, MyMadden scraping disabled")
+            self.session = None
+    
+    async def close(self):
+        """Close the aiohttp session."""
+        if self.session and not self.session.closed:
+            await self.session.close()
+    
+    def _normalize_team(self, team_name: str) -> Optional[str]:
+        """Convert team name to standard abbreviation."""
+        team_lower = team_name.lower().strip()
+        return TEAM_NAME_TO_ABBR.get(team_lower)
+    
+    def _build_schedule_url(self, year: int, season_type: str, week: int) -> str:
+        """Build the URL for a specific week's schedule."""
+        if season_type == 'post':
+            week_map = {
+                19: 'wildcard', 20: 'divisional', 21: 'conference', 22: 'superbowl'
+            }
+            week_str = week_map.get(week, str(week))
+        else:
+            week_str = str(week)
+        
+        return f"{self.BASE_URL}/schedule/{year}/{season_type}/{week_str}"
+    
+    async def fetch_schedule_page(self, year: int, season_type: str, week: int) -> Optional[str]:
+        """Fetch the HTML content of a schedule page."""
+        await self._ensure_session()
+        if not self.session:
+            return None
+        
+        import aiohttp
+        url = self._build_schedule_url(year, season_type, week)
+        logger.info(f"Fetching schedule from: {url}")
+        
+        try:
+            async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                if response.status == 200:
+                    return await response.text()
+                else:
+                    logger.error(f"Failed to fetch schedule: HTTP {response.status}")
+                    return None
+        except Exception as e:
+            logger.error(f"Error fetching schedule: {e}")
+            return None
+    
+    def parse_games_from_html(self, html_content: str) -> List[Dict]:
+        """Parse game results from the schedule page HTML."""
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError:
+            logger.warning("BeautifulSoup not installed, cannot parse HTML")
+            return []
+        
+        games = []
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Find all game cards - they use custom <basic-panel> elements with 'game' class
+        game_divs = soup.find_all('basic-panel')
+        game_divs = [d for d in game_divs if d.get('class') and 'game' in d.get('class')]
+        
+        for game_div in game_divs:
+            try:
+                text_content = game_div.get_text(separator='|', strip=True)
+                parts = [p.strip() for p in text_content.split('|') if p.strip()]
+                
+                if len(parts) < 4:
+                    continue
+                
+                away_team_name = None
+                away_score = None
+                home_team_name = None
+                home_score = None
+                
+                idx = 0
+                
+                # Away team
+                if idx < len(parts) and not parts[idx].isdigit() and not re.match(r'\d+-\d+-\d+', parts[idx]):
+                    away_team_name = parts[idx]
+                    idx += 1
+                
+                # Away score
+                if idx < len(parts) and parts[idx].isdigit():
+                    away_score = int(parts[idx])
+                    idx += 1
+                
+                # Skip record
+                if idx < len(parts) and re.match(r'\d+-\d+-\d+', parts[idx]):
+                    idx += 1
+                
+                # Skip game day
+                if idx < len(parts) and parts[idx] in ['TNF', 'MNF', 'SNF', 'SUN', 'SAT']:
+                    idx += 1
+                
+                # Home team
+                if idx < len(parts) and not parts[idx].isdigit() and not re.match(r'\d+-\d+-\d+', parts[idx]):
+                    home_team_name = parts[idx]
+                    idx += 1
+                
+                # Home score
+                if idx < len(parts) and parts[idx].isdigit():
+                    home_score = int(parts[idx])
+                
+                if not all([away_team_name, home_team_name]):
+                    continue
+                
+                away_team = self._normalize_team(away_team_name)
+                home_team = self._normalize_team(home_team_name)
+                
+                if not away_team or not home_team:
+                    continue
+                
+                completed = away_score is not None and home_score is not None
+                winner = None
+                
+                if completed:
+                    if away_score > home_score:
+                        winner = away_team
+                    elif home_score > away_score:
+                        winner = home_team
+                
+                games.append({
+                    'away_team': away_team,
+                    'home_team': home_team,
+                    'away_score': away_score,
+                    'home_score': home_score,
+                    'winner': winner,
+                    'completed': completed
+                })
+                
+            except Exception as e:
+                logger.error(f"Error parsing game div: {e}")
+                continue
+        
+        return games
+    
+    async def get_games_for_week(self, year: int, season_type: str, week: int) -> List[Dict]:
+        """Fetch and parse all games for a specific week."""
+        html = await self.fetch_schedule_page(year, season_type, week)
+        if not html:
+            return []
+        return self.parse_games_from_html(html)
+    
+    async def verify_game_result(self, away_team: str, home_team: str, 
+                                  year: int, season_type: str, week: int) -> Optional[Dict]:
+        """Verify a specific game result from the MyMadden website."""
+        games = await self.get_games_for_week(year, season_type, week)
+        
+        for game in games:
+            if game['away_team'] == away_team and game['home_team'] == home_team:
+                return game
+            # Try reverse
+            if game['away_team'] == home_team and game['home_team'] == away_team:
+                return game
+        
+        return None
+
+
 class AutoSettlementCog(commands.Cog):
     """Cog for automatically settling wagers based on game results."""
     
     def __init__(self, bot):
         self.bot = bot
         self.db_path = bot.db_path
-        # Channel ID for #scores - will be set dynamically
         self.scores_channel_id = None
-        # MyMadden bot user ID (or name pattern)
         self.mymadden_bot_name = "LIV on MyMadden"
+        self.scraper = MyMaddenScraper()
+        # Start the periodic check task
+        self.check_pending_wagers.start()
         
+    def cog_unload(self):
+        """Clean up when cog is unloaded."""
+        self.check_pending_wagers.cancel()
+        asyncio.create_task(self.scraper.close())
+    
     def normalize_team(self, team_input: str) -> Optional[str]:
         """Normalize team name to standard abbreviation."""
         team_lower = team_input.lower().strip()
@@ -71,29 +252,22 @@ class AutoSettlementCog(commands.Cog):
         Ravens 11-6-0 35 AT 17 Steelers 11-6-0
         @Repenters AT @hi
         2027 | Post Season | Divisional
-        
-        Returns dict with: away_team, home_team, away_score, home_score, week, season_type, year
         """
         lines = content.strip().split('\n')
         
         if len(lines) < 4:
             return None
         
-        # Check if this is a MyMadden score message
         if 'on MyMadden' not in lines[0]:
             return None
         
-        # Parse the score line (line 2)
-        # Format: "Ravens 11-6-0 35 AT 17 Steelers 11-6-0"
         score_line = lines[1].strip()
         
-        # Regex pattern to match: TeamName Record Score AT Score TeamName Record
-        # Pattern: (TeamName) (Record) (Score) AT (Score) (TeamName) (Record)
+        # Regex pattern: TeamName Record Score AT Score TeamName Record
         score_pattern = r'^(\w+)\s+(\d+-\d+-\d+)\s+(\d+)\s+AT\s+(\d+)\s+(\w+)\s+(\d+-\d+-\d+)$'
         match = re.match(score_pattern, score_line, re.IGNORECASE)
         
         if not match:
-            # Try alternative pattern without records
             score_pattern_alt = r'^(\w+)\s+(\d+)\s+AT\s+(\d+)\s+(\w+)$'
             match = re.match(score_pattern_alt, score_line, re.IGNORECASE)
             if match:
@@ -110,7 +284,6 @@ class AutoSettlementCog(commands.Cog):
             home_score = int(match.group(4))
             home_team_name = match.group(5)
         
-        # Normalize team names to abbreviations
         away_team = self.normalize_team(away_team_name)
         home_team = self.normalize_team(home_team_name)
         
@@ -118,8 +291,7 @@ class AutoSettlementCog(commands.Cog):
             logger.warning(f"Could not normalize teams: {away_team_name} vs {home_team_name}")
             return None
         
-        # Parse season info (line 4)
-        # Format: "2027 | Post Season | Divisional"
+        # Parse season info
         season_line = lines[3].strip() if len(lines) > 3 else ""
         season_parts = [p.strip() for p in season_line.split('|')]
         
@@ -138,12 +310,10 @@ class AutoSettlementCog(commands.Cog):
         
         if len(season_parts) >= 3:
             week_str = season_parts[2].strip()
-            # Try to extract week number
             week_match = re.search(r'(\d+)', week_str)
             if week_match:
                 week = int(week_match.group(1))
             else:
-                # Map playoff round names to week numbers
                 week_map = {
                     'wildcard': 19, 'wild card': 19,
                     'divisional': 20,
@@ -158,7 +328,7 @@ class AutoSettlementCog(commands.Cog):
         elif home_score > away_score:
             winner = home_team
         else:
-            winner = None  # Tie
+            winner = None
         
         return {
             'away_team': away_team,
@@ -171,18 +341,72 @@ class AutoSettlementCog(commands.Cog):
             'week': week
         }
     
+    async def verify_with_website(self, game_result: dict) -> Optional[dict]:
+        """
+        Verify game result using MyMadden website as additional reference.
+        Returns verified game result or None if verification fails.
+        """
+        year = game_result.get('year')
+        season_type = game_result.get('season_type', 'Regular Season')
+        week = game_result.get('week')
+        
+        if not year or not week:
+            logger.info("Cannot verify - missing year or week info")
+            return game_result  # Return original if we can't verify
+        
+        # Map season type to URL format
+        season_type_map = {
+            'Regular Season': 'reg',
+            'Pre Season': 'pre',
+            'Post Season': 'post',
+            'Preseason': 'pre',
+            'Postseason': 'post'
+        }
+        season_type_url = season_type_map.get(season_type, 'reg')
+        
+        try:
+            website_result = await self.scraper.verify_game_result(
+                game_result['away_team'],
+                game_result['home_team'],
+                year,
+                season_type_url,
+                week
+            )
+            
+            if website_result:
+                # Compare results
+                if website_result['winner'] == game_result['winner']:
+                    logger.info(f"✅ Website verification SUCCESS: {game_result['away_team']} @ {game_result['home_team']}")
+                    game_result['verified'] = True
+                    game_result['verification_source'] = 'MyMadden Website'
+                else:
+                    logger.warning(f"⚠️ Website verification MISMATCH: Discord says {game_result['winner']}, Website says {website_result['winner']}")
+                    # Use website result as authoritative
+                    game_result['winner'] = website_result['winner']
+                    game_result['away_score'] = website_result['away_score']
+                    game_result['home_score'] = website_result['home_score']
+                    game_result['verified'] = True
+                    game_result['verification_source'] = 'MyMadden Website (corrected)'
+            else:
+                logger.info(f"Could not find game on website for verification")
+                game_result['verified'] = False
+                game_result['verification_source'] = 'Discord only'
+                
+        except Exception as e:
+            logger.error(f"Error during website verification: {e}")
+            game_result['verified'] = False
+            game_result['verification_source'] = 'Discord only (verification error)'
+        
+        return game_result
+    
     async def settle_wagers_for_game(self, game_result: dict, channel: discord.TextChannel) -> list:
-        """
-        Find and settle all wagers matching this game result.
-        Returns list of settled wager info for notification.
-        """
+        """Find and settle all wagers matching this game result."""
         settled_wagers = []
         
         away_team = game_result['away_team']
         home_team = game_result['home_team']
         winner = game_result['winner']
         week = game_result.get('week')
-        year = game_result.get('year')
         
         if not winner:
             logger.info(f"Game ended in tie: {away_team} @ {home_team} - no wagers settled")
@@ -190,12 +414,6 @@ class AutoSettlementCog(commands.Cog):
         
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
-        # Find matching wagers that are:
-        # 1. Accepted (away_accepted = 1)
-        # 2. Not yet settled (winner_user_id IS NULL)
-        # 3. Match the game (home_team_id and away_team_id)
-        # 4. Optionally match week if provided
         
         query = '''
             SELECT wager_id, season_year, week, home_team_id, away_team_id,
@@ -220,8 +438,6 @@ class AutoSettlementCog(commands.Cog):
         for wager in wagers:
             wager_id, season, wager_week, h_team, a_team, home_user, away_user, amount, challenger_pick, opponent_pick = wager
             
-            # Determine wager winner based on picks
-            # home_user is the challenger (creator), away_user is the opponent
             if challenger_pick == winner:
                 wager_winner = home_user
                 wager_loser = away_user
@@ -229,7 +445,6 @@ class AutoSettlementCog(commands.Cog):
                 wager_winner = away_user
                 wager_loser = home_user
             
-            # Update the wager
             cursor.execute('''
                 UPDATE wagers SET winner_user_id = ?, game_winner = ? WHERE wager_id = ?
             ''', (wager_winner, winner, wager_id))
@@ -242,7 +457,9 @@ class AutoSettlementCog(commands.Cog):
                 'game_winner': winner,
                 'away_team': away_team,
                 'home_team': home_team,
-                'week': wager_week
+                'week': wager_week,
+                'verified': game_result.get('verified', False),
+                'verification_source': game_result.get('verification_source', 'Unknown')
             })
             
             logger.info(f"Auto-settled wager #{wager_id}: {winner} won, user {wager_winner} wins ${amount}")
@@ -268,8 +485,14 @@ class AutoSettlementCog(commands.Cog):
             home_name = ABBR_TO_NAME.get(wager['home_team'], wager['home_team'])
             winner_name = ABBR_TO_NAME.get(wager['game_winner'], wager['game_winner'])
             
+            # Add verification badge
+            if wager.get('verified'):
+                title = "🤖✅ Wager Auto-Settled (Verified)"
+            else:
+                title = "🤖 Wager Auto-Settled"
+            
             embed = discord.Embed(
-                title="🤖 Wager Auto-Settled!",
+                title=title,
                 description=f"**{winner_name}** won the game!",
                 color=discord.Color.green()
             )
@@ -284,47 +507,169 @@ class AutoSettlementCog(commands.Cog):
                 value=f"{loser_mention} pays ${wager['amount']:.2f} to {winner_mention}\nThen {winner_mention} uses `/markwagerpaid {wager['wager_id']}` to confirm",
                 inline=False
             )
-            embed.set_footer(text="Auto-settled by Mistress LIV based on game results")
+            
+            # Add verification source
+            if wager.get('verification_source'):
+                embed.set_footer(text=f"Source: {wager['verification_source']} | Auto-settled by Mistress LIV")
+            else:
+                embed.set_footer(text="Auto-settled by Mistress LIV based on game results")
             
             await channel.send(embed=embed)
     
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """Listen for score messages in #scores channel."""
-        # Ignore our own messages
         if message.author == self.bot.user:
             return
         
-        # Check if this is from the scores channel
         if message.channel.name != 'scores':
             return
         
-        # Check if this looks like a MyMadden score message
         content = message.content
         
-        # Also check embeds (MyMadden might use embeds)
         if message.embeds:
             for embed in message.embeds:
                 if embed.description:
                     content = embed.description
                 elif embed.title and 'MyMadden' in embed.title:
-                    # Build content from embed fields
                     content = f"{embed.title}\n"
                     for field in embed.fields:
                         content += f"{field.value}\n"
         
-        # Try to parse the score
         game_result = self.parse_mymadden_score(content)
         
         if game_result:
             logger.info(f"Detected game result: {game_result['away_team']} {game_result['away_score']} @ {game_result['home_team']} {game_result['home_score']}")
             
+            # Verify with MyMadden website
+            game_result = await self.verify_with_website(game_result)
+            
             # Settle matching wagers
             settled = await self.settle_wagers_for_game(game_result, message.channel)
             
-            # Send notifications
             if settled:
                 await self.send_settlement_notifications(settled, message.channel)
+    
+    @tasks.loop(minutes=30)
+    async def check_pending_wagers(self):
+        """Periodically check for pending wagers and try to settle them using MyMadden website."""
+        await self.bot.wait_until_ready()
+        
+        logger.info("Running periodic wager check...")
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Get pending wagers grouped by game
+        cursor.execute('''
+            SELECT DISTINCT season_year, week, home_team_id, away_team_id
+            FROM wagers
+            WHERE away_accepted = 1 AND winner_user_id IS NULL
+        ''')
+        
+        pending_games = cursor.fetchall()
+        conn.close()
+        
+        if not pending_games:
+            logger.info("No pending wagers to check")
+            return
+        
+        logger.info(f"Found {len(pending_games)} games with pending wagers")
+        
+        for year, week, home_team, away_team in pending_games:
+            try:
+                # Try to get result from website
+                website_result = await self.scraper.verify_game_result(
+                    away_team, home_team, year, 'reg', week
+                )
+                
+                if website_result and website_result.get('completed') and website_result.get('winner'):
+                    logger.info(f"Found completed game on website: {away_team} @ {home_team}, winner: {website_result['winner']}")
+                    
+                    # Create game result dict
+                    game_result = {
+                        'away_team': away_team,
+                        'home_team': home_team,
+                        'away_score': website_result['away_score'],
+                        'home_score': website_result['home_score'],
+                        'winner': website_result['winner'],
+                        'year': year,
+                        'week': week,
+                        'verified': True,
+                        'verification_source': 'MyMadden Website (periodic check)'
+                    }
+                    
+                    # Find a channel to send notifications
+                    for guild in self.bot.guilds:
+                        scores_channel = discord.utils.get(guild.text_channels, name='scores')
+                        if scores_channel:
+                            settled = await self.settle_wagers_for_game(game_result, scores_channel)
+                            if settled:
+                                await self.send_settlement_notifications(settled, scores_channel)
+                            break
+                            
+            except Exception as e:
+                logger.error(f"Error checking game {away_team} @ {home_team}: {e}")
+                continue
+            
+            # Small delay between requests
+            await asyncio.sleep(2)
+    
+    @check_pending_wagers.before_loop
+    async def before_check_pending_wagers(self):
+        """Wait for bot to be ready before starting the task."""
+        await self.bot.wait_until_ready()
+    
+    @app_commands.command(name="checkscore", description="Check a game result from MyMadden website")
+    @app_commands.describe(
+        away_team="The away team",
+        home_team="The home team",
+        year="Season year (e.g., 2027)",
+        week="Week number"
+    )
+    async def checkscore(self, interaction: discord.Interaction, away_team: str, home_team: str, year: int, week: int):
+        """Check a game result directly from MyMadden website."""
+        await interaction.response.defer(ephemeral=True)
+        
+        away_abbr = self.normalize_team(away_team)
+        home_abbr = self.normalize_team(home_team)
+        
+        if not away_abbr or not home_abbr:
+            await interaction.followup.send(f"❌ Invalid team name(s): {away_team}, {home_team}", ephemeral=True)
+            return
+        
+        result = await self.scraper.verify_game_result(away_abbr, home_abbr, year, 'reg', week)
+        
+        if result:
+            away_name = ABBR_TO_NAME.get(result['away_team'], result['away_team'])
+            home_name = ABBR_TO_NAME.get(result['home_team'], result['home_team'])
+            
+            if result['completed']:
+                winner_name = ABBR_TO_NAME.get(result['winner'], 'TIE') if result['winner'] else 'TIE'
+                embed = discord.Embed(
+                    title="📊 Game Result from MyMadden",
+                    description=f"**{winner_name}** won!",
+                    color=discord.Color.green()
+                )
+                embed.add_field(name="Away Team", value=f"{away_name} ({result['away_team']})", inline=True)
+                embed.add_field(name="Home Team", value=f"{home_name} ({result['home_team']})", inline=True)
+                embed.add_field(name="Score", value=f"{result['away_score']} - {result['home_score']}", inline=True)
+            else:
+                embed = discord.Embed(
+                    title="📊 Game from MyMadden",
+                    description="Game not yet completed",
+                    color=discord.Color.orange()
+                )
+                embed.add_field(name="Away Team", value=f"{away_name} ({result['away_team']})", inline=True)
+                embed.add_field(name="Home Team", value=f"{home_name} ({result['home_team']})", inline=True)
+            
+            embed.add_field(name="Year", value=str(year), inline=True)
+            embed.add_field(name="Week", value=str(week), inline=True)
+            embed.set_footer(text="Data from mymadden.com")
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ Could not find game: {away_team} @ {home_team} (Week {week}, {year})", ephemeral=True)
     
     @app_commands.command(name="parsescore", description="Manually parse a score message to test auto-settlement")
     @app_commands.describe(message_content="The score message to parse (copy/paste from #scores)")
@@ -364,7 +709,6 @@ class AutoSettlementCog(commands.Cog):
         """Admin command to manually settle a wager."""
         await interaction.response.defer()
         
-        # Check if user has admin permissions
         if not interaction.user.guild_permissions.administrator:
             await interaction.followup.send("❌ Only admins can manually settle wagers!", ephemeral=True)
             return
@@ -403,7 +747,6 @@ class AutoSettlementCog(commands.Cog):
             await interaction.followup.send("❌ This wager has already been settled!", ephemeral=True)
             return
         
-        # Validate winning team is one of the teams in the game
         if winning_team_norm not in [home_team, away_team]:
             conn.close()
             await interaction.followup.send(
@@ -412,7 +755,6 @@ class AutoSettlementCog(commands.Cog):
             )
             return
         
-        # Determine who won the wager based on picks
         if challenger_pick == winning_team_norm:
             wager_winner = home_user
             wager_loser = away_user
@@ -420,7 +762,6 @@ class AutoSettlementCog(commands.Cog):
             wager_winner = away_user
             wager_loser = home_user
         
-        # Update the wager
         cursor.execute('''
             UPDATE wagers SET winner_user_id = ?, game_winner = ? WHERE wager_id = ?
         ''', (wager_winner, winning_team_norm, wager_id))
@@ -485,7 +826,7 @@ class AutoSettlementCog(commands.Cog):
         )
         
         wager_list = []
-        for wager in wagers[:15]:  # Limit to 15
+        for wager in wagers[:15]:
             wager_id, season, week, home_team, away_team, home_user, away_user, amount, challenger_pick = wager
             away_name = ABBR_TO_NAME.get(away_team, away_team)
             home_name = ABBR_TO_NAME.get(home_team, home_team)
@@ -502,6 +843,20 @@ class AutoSettlementCog(commands.Cog):
             embed.set_footer(text=f"Total: {len(wagers)} pending wagers")
         
         await interaction.followup.send(embed=embed)
+    
+    @app_commands.command(name="forcecheckwagers", description="Force check all pending wagers against MyMadden website")
+    async def forcecheckwagers(self, interaction: discord.Interaction):
+        """Admin command to force check all pending wagers."""
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Only admins can use this command!", ephemeral=True)
+            return
+        
+        await interaction.response.defer()
+        
+        # Trigger the periodic check manually
+        await self.check_pending_wagers()
+        
+        await interaction.followup.send("✅ Forced check of all pending wagers completed. Check #scores for any settlements.")
 
 
 async def setup(bot):
