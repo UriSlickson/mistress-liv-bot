@@ -1,0 +1,17 @@
+MyMadden Commands (from Golden Egg bot):
+
+**Input these commands in only the #townsquare channel**
+
+Members:
+- /register - Register your team
+- /connectservices - Connect (twitch, youtube, etc) to #broadcasts
+- /players - Post Players to #otb
+- /sync info - Sync Info
+- /sync stats - Sync Stats
+- /sync rosters - Sync Rosters
+
+@Commish Mishes (Admin):
+- /assignteam - Assign teams once registered
+- /games_channels set up - Set up game channels
+- /games_channels clear - Clear game channels
+- /game_channels tag - Tag remaining games

@@ -37,6 +37,84 @@ class AnnouncementsCog(commands.Cog):
             logger.error(f"Error getting registered owners: {e}")
             return []
     
+    @app_commands.command(name="postcommands", description="[Admin] Post the full command list to a channel")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(channel="Channel to post the command list to")
+    async def post_commands(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        """Post the comprehensive command list as an embed."""
+        await interaction.response.defer(ephemeral=True)
+        
+        # Create the main embed
+        embed = discord.Embed(
+            title="📋 MISTRESS LIV LEAGUE COMMANDS",
+            description="All available commands for the league",
+            color=discord.Color.gold(),
+            timestamp=datetime.utcnow()
+        )
+        
+        # MyMadden Commands
+        mymadden_cmds = """
+`/register` - Register your team
+`/connectservices` - Link Twitch/YouTube to #broadcasts
+`/players` - Post players to #otb
+`/sync info` - Sync league info
+`/sync stats` - Sync player stats
+`/sync rosters` - Sync team rosters
+"""
+        embed.add_field(name="🏈 MyMadden Commands *(use in #townsquare)*", value=mymadden_cmds, inline=False)
+        
+        # Info Commands
+        info_cmds = """
+`/help` - Show all commands
+`/serverinfo` - View server stats
+"""
+        embed.add_field(name="ℹ️ Info Commands", value=info_cmds, inline=False)
+        
+        # Payment Commands
+        payment_cmds = """
+`/mypayments` - View your payment summary
+`/whooowesme` - See who owes you money
+`/whoiowe` - See who you owe money to
+`/paymentschedule` - View all outstanding dues
+`/markpaid` - Mark a payment as complete
+`/topearners` - Earnings leaderboard
+`/toplosers` - Losses leaderboard
+"""
+        embed.add_field(name="💰 Payment & Dues Commands", value=payment_cmds, inline=False)
+        
+        # Profitability Commands
+        profit_cmds = """
+`/profitability` - View all-time franchise profits
+`/myprofit` - View your profit history
+"""
+        embed.add_field(name="📊 Profitability Commands", value=profit_cmds, inline=False)
+        
+        # Fun Commands
+        fun_cmds = """
+`/whiner` - See who complains the most 😤
+`/mywhines` - Check your complaint stats
+"""
+        embed.add_field(name="🎮 Fun Commands", value=fun_cmds, inline=False)
+        
+        # Admin Commands
+        admin_cmds = """
+`/announce` - Post league announcement
+`/createpayment` - Create a payment obligation
+`/clearpayment` - Delete a payment
+`/resetwhiner` - Reset complaint stats
+`/generatepayments` - Generate playoff payments
+`/setseeding` - Set team playoff seeding
+"""
+        embed.add_field(name="🔧 Admin Commands", value=admin_cmds, inline=False)
+        
+        embed.set_footer(text="Mistress LIV Bot • Use / to see all commands")
+        
+        try:
+            await channel.send(embed=embed)
+            await interaction.followup.send(f"✅ Command list posted to {channel.mention}!", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Failed to post: {e}", ephemeral=True)
+    
     @app_commands.command(name="announcement", description="[Admin] Post announcement to channels and DM team owners")
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(message="The announcement message to send")

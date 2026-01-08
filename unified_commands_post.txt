@@ -1,0 +1,45 @@
+📋 **MISTRESS LIV LEAGUE COMMANDS**
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🏈 **MyMadden Commands** *(use in #townsquare)*
+`/register` - Register your team
+`/connectservices` - Connect streaming to #broadcasts
+`/players` - Post players to #otb
+`/sync info` - Sync league info
+`/sync stats` - Sync stats
+`/sync rosters` - Sync rosters
+
+🤖 **Mistress LIV Bot Commands**
+
+**Info**
+`/help` - Show all commands
+`/serverinfo` - View server stats
+
+**Payments & Dues**
+`/mypayments` - View your payment summary
+`/whooowesme` - See who owes you
+`/whoiowe` - See who you owe
+`/paymentschedule` - View all dues in #dues
+`/markpaid` - Mark a payment complete
+`/topearners` - Earnings leaderboard
+`/toplosers` - Losses leaderboard
+
+**Profitability**
+`/profitability` - All-time franchise profits
+`/myprofit` - Your profit history
+
+**Fun**
+`/whiner` - Who complains the most 😤
+`/mywhines` - Your complaint stats
+
+**Admin Only**
+`/announce` - Post announcement
+`/createpayment` - Create payment obligation
+`/clearpayment` - Delete a payment
+`/resetwhiner` - Reset complaint stats
+`/assignteam` - Assign teams
+`/games_channels set up` - Set up game channels
+`/games_channels clear` - Clear game channels
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
