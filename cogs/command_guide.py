@@ -406,16 +406,16 @@ class CommandGuideCog(commands.Cog):
             admin_embed.add_field(
                 name="💰 Season End Setup",
                 value=(
-                    "**1. Set seedings:** `/setseeding season conference seed user`\n"
-                    "Set AFC/NFC seeds 1-7 and NFC 8-16.\n\n"
-                    "**2. Record playoff wins:** `/setplayoffwinner season round winner conference`\n"
-                    "Record each playoff round winner.\n\n"
-                    "**3. Generate payments:** `/generatepayments season`\n"
-                    "Creates all payment obligations.\n\n"
-                    "**4. Post to channels:** `/postpayments season`\n"
-                    "Sends payment summaries to division channels.\n\n"
-                    "**Clear data:** `/clearpayments season confirm`\n"
-                    "**Clear playoff results:** `/clearplayoffresults season confirm`"
+                    "**1. Bulk set seedings:** `/bulkseeding season conference teams`\n"
+                    "Set all seeds at once with comma-separated team list.\n"
+                    "Example: `/bulkseeding 2027 NFC LV,ATL,TEN,MIA,SEA,DAL,PHI,...`\n\n"
+                    "**1b. Individual seeding:** `/setseeding season conference seed user`\n\n"
+                    "**2. Record playoff wins:** `/setplayoffwinner season round winner conference`\n\n"
+                    "**3. Generate payments:** `/generatepayments season`\n\n"
+                    "**4. Post to channels:** `/postpayments season`\n\n"
+                    "**View seedings:** `/viewseedings season`\n"
+                    "**Scan team roles:** `/scanteams`\n"
+                    "**Clear data:** `/clearpayments season confirm`"
                 ),
                 inline=False
             )

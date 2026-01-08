@@ -260,8 +260,165 @@ class MyMaddenScraper:
         return [g for g in games if g['completed']]
 
 
-# Singleton instance for reuse
+# Team ID to name mapping (based on MyMadden team logo IDs)
+TEAM_ID_TO_NAME = {
+    '0': 'unknown', '1': 'bears', '2': 'bengals', '3': 'bills', '4': 'broncos',
+    '5': 'browns', '6': 'buccaneers', '7': 'cardinals', '8': 'chargers',
+    '9': 'chiefs', '10': 'colts', '11': 'commanders', '12': 'cowboys',
+    '13': 'dolphins', '14': 'eagles', '15': 'falcons', '16': 'giants',
+    '17': 'jaguars', '18': 'jets', '19': 'lions', '20': 'packers',
+    '21': 'panthers', '22': 'patriots', '23': 'raiders', '24': 'rams',
+    '25': 'ravens', '26': 'saints', '27': 'seahawks', '28': 'steelers',
+    '29': 'texans', '30': 'titans', '31': '49ers', '32': 'vikings'
+}
+
+# AFC and NFC team lists for conference detection
+AFC_TEAMS = ['BAL', 'BUF', 'CIN', 'CLE', 'DEN', 'HOU', 'IND', 'JAX', 'KC', 'LV', 'LAC', 'MIA', 'NE', 'NYJ', 'PIT', 'TEN']
+NFC_TEAMS = ['ARI', 'ATL', 'CAR', 'CHI', 'DAL', 'DET', 'GB', 'LAR', 'MIN', 'NO', 'NYG', 'PHI', 'SEA', 'SF', 'TB', 'WAS']
+
+
+class StandingsScraper:
+    """Scraper for MyMadden standings/seedings."""
+    
+    BASE_URL = "https://mymadden.com/lg/liv"
+    
+    def __init__(self):
+        self.session = None
+    
+    async def _ensure_session(self):
+        """Ensure aiohttp session exists."""
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
+    
+    async def close(self):
+        """Close the aiohttp session."""
+        if self.session and not self.session.closed:
+            await self.session.close()
+    
+    def _team_id_to_abbr(self, team_id: str) -> Optional[str]:
+        """Convert team ID to abbreviation."""
+        team_name = TEAM_ID_TO_NAME.get(team_id, '')
+        return TEAM_NAME_TO_ABBR.get(team_name)
+    
+    async def fetch_standings_page(self, year: int) -> Optional[str]:
+        """Fetch the conference standings page for a given year."""
+        await self._ensure_session()
+        
+        url = f"{self.BASE_URL}/standings/{year}/conf"
+        logger.info(f"Fetching standings from: {url}")
+        
+        try:
+            async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                if response.status == 200:
+                    return await response.text()
+                else:
+                    logger.error(f"Failed to fetch standings: HTTP {response.status}")
+                    return None
+        except Exception as e:
+            logger.error(f"Error fetching standings: {e}")
+            return None
+    
+    def parse_standings_from_html(self, html_content: str) -> Dict[str, List[Dict]]:
+        """
+        Parse conference standings from HTML.
+        
+        Returns dict with 'afc' and 'nfc' keys, each containing list of:
+        - seed: int (1-16)
+        - team_id: str
+        - team_abbr: str
+        - team_name: str
+        """
+        results = {'afc': [], 'nfc': []}
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        tables = soup.find_all('table')
+        
+        # Tables: [0] = header/nav, [1] = AFC, [2] = NFC
+        for table_idx, conference in [(1, 'afc'), (2, 'nfc')]:
+            if table_idx >= len(tables):
+                continue
+            
+            table = tables[table_idx]
+            rows = table.find_all('tr')
+            
+            for row_idx, row in enumerate(rows):
+                if row_idx == 0:  # Skip header
+                    continue
+                
+                cells = row.find_all('td')
+                if len(cells) < 2:
+                    continue
+                
+                try:
+                    # First cell is seed number
+                    seed = int(cells[0].get_text(strip=True))
+                    
+                    # Second cell contains team image
+                    img = cells[1].find('img')
+                    if not img:
+                        continue
+                    
+                    img_src = img.get('src', '')
+                    # Extract team ID from URL like /teamlogos/256/22.png
+                    id_match = re.search(r'/(\d+)\.png', img_src)
+                    if not id_match:
+                        continue
+                    
+                    team_id = id_match.group(1)
+                    team_name = TEAM_ID_TO_NAME.get(team_id, f'unknown_{team_id}')
+                    team_abbr = TEAM_NAME_TO_ABBR.get(team_name)
+                    
+                    results[conference].append({
+                        'seed': seed,
+                        'team_id': team_id,
+                        'team_name': team_name,
+                        'team_abbr': team_abbr
+                    })
+                    
+                except (ValueError, AttributeError) as e:
+                    logger.warning(f"Error parsing standings row: {e}")
+                    continue
+        
+        return results
+    
+    async def get_standings(self, year: int) -> Dict[str, List[Dict]]:
+        """
+        Get conference standings for a given year.
+        
+        Returns dict with 'afc' and 'nfc' keys.
+        """
+        html = await self.fetch_standings_page(year)
+        if not html:
+            return {'afc': [], 'nfc': []}
+        
+        return self.parse_standings_from_html(html)
+    
+    async def get_playoff_seedings(self, year: int) -> Dict[str, List[Dict]]:
+        """
+        Get playoff seedings (seeds 1-7) for both conferences.
+        
+        Returns dict with 'afc' and 'nfc' keys, each containing seeds 1-7.
+        """
+        standings = await self.get_standings(year)
+        
+        return {
+            'afc': [s for s in standings['afc'] if s['seed'] <= 7],
+            'nfc': [s for s in standings['nfc'] if s['seed'] <= 7]
+        }
+    
+    async def get_nfc_pot_payers(self, year: int) -> List[Dict]:
+        """
+        Get NFC seeds 8-16 who pay into the pot.
+        
+        Returns list of teams with seeds 8-16.
+        """
+        standings = await self.get_standings(year)
+        return [s for s in standings['nfc'] if 8 <= s['seed'] <= 16]
+
+
+# Singleton instances for reuse
 _scraper_instance = None
+_standings_scraper_instance = None
 
 def get_scraper() -> MyMaddenScraper:
     """Get or create the singleton scraper instance."""
@@ -269,6 +426,14 @@ def get_scraper() -> MyMaddenScraper:
     if _scraper_instance is None:
         _scraper_instance = MyMaddenScraper()
     return _scraper_instance
+
+
+def get_standings_scraper() -> StandingsScraper:
+    """Get or create the singleton standings scraper instance."""
+    global _standings_scraper_instance
+    if _standings_scraper_instance is None:
+        _standings_scraper_instance = StandingsScraper()
+    return _standings_scraper_instance
 
 
 async def test_scraper():
