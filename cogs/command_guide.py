@@ -404,17 +404,32 @@ class CommandGuideCog(commands.Cog):
             )
             
             admin_embed.add_field(
-                name="💰 Season End Setup",
+                name="💰 Season End Setup - Step by Step",
                 value=(
-                    "**1. Bulk set seedings:** `/bulkseeding season conference teams`\n"
-                    "Set all seeds at once with comma-separated team list.\n"
-                    "Example: `/bulkseeding 2027 NFC LV,ATL,TEN,MIA,SEA,DAL,PHI,...`\n\n"
-                    "**1b. Individual seeding:** `/setseeding season conference seed user`\n\n"
-                    "**2. Record playoff wins:** `/setplayoffwinner season round winner conference`\n\n"
-                    "**3. Generate payments:** `/generatepayments season`\n\n"
-                    "**4. Post to channels:** `/postpayments season`\n\n"
-                    "**View seedings:** `/viewseedings season`\n"
+                    "**STEP 1: Import Seedings (after Super Bowl)**\n"
+                    "Use `/bulkseeding` to set all seeds at once:\n"
+                    "`/bulkseeding 2027 AFC NE,PIT,CAR,NYG,LAR,BUF,JAX,DEN,...`\n"
+                    "`/bulkseeding 2027 NFC LV,ATL,TEN,MIA,SEA,DAL,PHI,IND,...`\n\n"
+                    "**STEP 2: Record Playoff Winners**\n"
+                    "`/setplayoffwinner 2027 wildcard @user AFC`\n"
+                    "`/setplayoffwinner 2027 divisional @user NFC`\n"
+                    "...repeat for each round winner\n\n"
+                    "**STEP 3: Generate & Post Payments**\n"
+                    "`/generatepayments 2027`\n"
+                    "`/postpayments 2027`"
+                ),
+                inline=False
+            )
+            
+            admin_embed.add_field(
+                name="📊 Seeding Helper Commands",
+                value=(
                     "**Scan team roles:** `/scanteams`\n"
+                    "Shows which users have which team roles.\n\n"
+                    "**View seedings:** `/viewseedings season`\n"
+                    "Check current seedings for a season.\n\n"
+                    "**Individual seeding:** `/setseeding season conference seed user`\n"
+                    "Set one seed at a time if needed.\n\n"
                     "**Clear data:** `/clearpayments season confirm`"
                 ),
                 inline=False
