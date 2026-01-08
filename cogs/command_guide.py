@@ -465,15 +465,139 @@ class CommandGuideCog(commands.Cog):
             embeds_posted += 1
             
             # =====================
-            # MYMADDEN REFERENCE
+            # MYMADDEN BOT COMMANDS
             # =====================
-            mymadden_embed = discord.Embed(
-                title="🏈 MyMadden Integration",
-                description="How the bot integrates with MyMadden for automatic features.",
+            mymadden_embed1 = discord.Embed(
+                title="🏈 MyMadden Bot Commands",
+                description=(
+                    "Commands for the **MyMadden Bot** to access league information.\n"
+                    "Use `/` prefix for all commands.\n\n"
+                    "*Full documentation: [mymadden.com/bot-commands](https://mymadden.com/bot-commands)*"
+                ),
                 color=discord.Color.dark_green()
             )
             
-            mymadden_embed.add_field(
+            mymadden_embed1.add_field(
+                name="📋 League Info Commands",
+                value=(
+                    "`/web` - Link to league website\n"
+                    "`/schedule` - Link to league schedule\n"
+                    "`/standings` - Link to league standings\n"
+                    "`/stats` - Link to league stats\n"
+                    "`/trades` - Link to league trades\n"
+                    "`/players` - Link to player search\n"
+                    "`/injuries` - Link to injuries table\n"
+                    "`/teams` - Link to all teams\n"
+                    "`/week` - Current year, stage, and week"
+                ),
+                inline=False
+            )
+            
+            mymadden_embed1.add_field(
+                name="🏟️ Team Commands",
+                value=(
+                    "`/team {team}` - Link to specified team page\n"
+                    "`/owner {team}` - Shows team owner info\n\n"
+                    "*{team} can be city, nickname, or abbreviation*\n"
+                    "*Example: `/team KC` or `/team Chiefs` or `/team Kansas City`*"
+                ),
+                inline=False
+            )
+            
+            mymadden_embed1.add_field(
+                name="🎮 Game Commands",
+                value=(
+                    "`/games` - All games for current week\n"
+                    "`/unplayed` - Unplayed games this week\n"
+                    "`/played` - Played games this week\n"
+                    "`/tws {team} [week]` - Team's game for a specific week\n\n"
+                    "*tws = Team Week Score*\n"
+                    "*Example: `/tws Ravens 15` shows Ravens Week 15 game*"
+                ),
+                inline=False
+            )
+            
+            await channel.send(embed=mymadden_embed1)
+            embeds_posted += 1
+            
+            # =====================
+            # MYMADDEN COMMANDS PART 2
+            # =====================
+            mymadden_embed2 = discord.Embed(
+                title="🏈 MyMadden Bot Commands (Continued)",
+                description="Player search, trade block, and social commands.",
+                color=discord.Color.dark_green()
+            )
+            
+            mymadden_embed2.add_field(
+                name="🔍 Player Search",
+                value=(
+                    "`/ps [args]` - Search for players\n\n"
+                    "**Args can include:**\n"
+                    "• Team name/abbreviation\n"
+                    "• Player name (first, last, or both)\n"
+                    "• `rookie` or `r` for rookies only\n"
+                    "• Position or position group\n\n"
+                    "**Position Groups:**\n"
+                    "• `SKILL` → HB, TE, WR\n"
+                    "• `OL` → LT, LG, C, RG, RT\n"
+                    "• `DL` → LE, DT, RE\n"
+                    "• `LB` → LOLB, MLB, ROLB\n"
+                    "• `DB` → CB, FS, SS\n\n"
+                    "*Example: `/ps Ravens QB` or `/ps rookie WR`*"
+                ),
+                inline=False
+            )
+            
+            mymadden_embed2.add_field(
+                name="📦 Trade Block",
+                value=(
+                    "`/tblock [args]` - Search trade block\n\n"
+                    "Uses same args as player search.\n"
+                    "If one team specified, includes link to their block.\n\n"
+                    "*Example: `/tblock Chiefs WR` or `/tblock rookie`*"
+                ),
+                inline=False
+            )
+            
+            mymadden_embed2.add_field(
+                name="👤 Social Commands",
+                value=(
+                    "*Requires connecting profile on MyMadden*\n\n"
+                    "`/whois me` or `/whois @user` - MyMadden profile info\n"
+                    "`/twitch me` or `/twitch @user` - Twitch link\n"
+                    "`/youtube me` or `/youtube @user` - YouTube link\n"
+                    "`/psn me` or `/psn @user` - PSN username\n"
+                    "`/xbox me` or `/xbox @user` - Xbox username\n"
+                    "`/twitter me` or `/twitter @user` - Twitter link"
+                ),
+                inline=False
+            )
+            
+            mymadden_embed2.add_field(
+                name="🔄 Sync & Other",
+                value=(
+                    "`/sync` - Trigger data sync from console\n"
+                    "`/blog [number]` - Recent blog posts (default 5)\n"
+                    "`/help` - Link to bot commands help page\n"
+                    "`/hello` - Test command (posts 'Hello, World!')"
+                ),
+                inline=False
+            )
+            
+            await channel.send(embed=mymadden_embed2)
+            embeds_posted += 1
+            
+            # =====================
+            # MYMADDEN INTEGRATION
+            # =====================
+            integration_embed = discord.Embed(
+                title="🔗 MyMadden + Mistress LIV Integration",
+                description="How the two bots work together for automatic features.",
+                color=discord.Color.dark_teal()
+            )
+            
+            integration_embed.add_field(
                 name="🔄 Auto-Settlement",
                 value=(
                     "When MyMadden bot posts game scores in **#scores**, "
@@ -482,13 +606,13 @@ class CommandGuideCog(commands.Cog):
                     "2. Identifies the winning team\n"
                     "3. Finds matching pending wagers\n"
                     "4. Settles wagers and notifies users\n"
-                    "5. Cross-references with MyMadden website for verification"
+                    "5. Cross-references with MyMadden website"
                 ),
                 inline=False
             )
             
-            mymadden_embed.add_field(
-                name="📊 Score Format",
+            integration_embed.add_field(
+                name="📊 Score Format Recognized",
                 value=(
                     "MyMadden posts scores in this format:\n"
                     "```\n"
@@ -501,17 +625,17 @@ class CommandGuideCog(commands.Cog):
                 inline=False
             )
             
-            mymadden_embed.add_field(
-                name="🌐 Website Reference",
+            integration_embed.add_field(
+                name="🌐 Website Verification",
                 value=(
-                    "The bot also checks [mymadden.com/lg/liv](https://mymadden.com/lg/liv) "
+                    "Mistress LIV Bot also checks [mymadden.com/lg/liv](https://mymadden.com/lg/liv) "
                     "for game results as an additional verification source.\n\n"
                     "**Manual check:** `/checkscore away_team home_team week`"
                 ),
                 inline=False
             )
             
-            await channel.send(embed=mymadden_embed)
+            await channel.send(embed=integration_embed)
             embeds_posted += 1
             
             # Final confirmation
