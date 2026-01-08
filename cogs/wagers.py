@@ -1,6 +1,7 @@
 """
 Wagers Cog - Complete wager system for Mistress LIV Bot
 Handles creating, tracking, and settling wagers between league members.
+Allows betting on ANY game, not just games between the two bettors.
 """
 import discord
 from discord.ext import commands
@@ -8,8 +9,28 @@ from discord import app_commands
 import sqlite3
 from datetime import datetime
 import logging
+from typing import Optional, Literal
 
 logger = logging.getLogger('MistressLIV.Wagers')
+
+# NFL Teams for autocomplete
+NFL_TEAMS = [
+    'ARI', 'ATL', 'BAL', 'BUF', 'CAR', 'CHI', 'CIN', 'CLE',
+    'DAL', 'DEN', 'DET', 'GB', 'HOU', 'IND', 'JAX', 'KC',
+    'LAC', 'LAR', 'LV', 'MIA', 'MIN', 'NE', 'NO', 'NYG',
+    'NYJ', 'PHI', 'PIT', 'SEA', 'SF', 'TB', 'TEN', 'WAS'
+]
+
+TEAM_NAMES = {
+    'ARI': 'Cardinals', 'ATL': 'Falcons', 'BAL': 'Ravens', 'BUF': 'Bills',
+    'CAR': 'Panthers', 'CHI': 'Bears', 'CIN': 'Bengals', 'CLE': 'Browns',
+    'DAL': 'Cowboys', 'DEN': 'Broncos', 'DET': 'Lions', 'GB': 'Packers',
+    'HOU': 'Texans', 'IND': 'Colts', 'JAX': 'Jaguars', 'KC': 'Chiefs',
+    'LAC': 'Chargers', 'LAR': 'Rams', 'LV': 'Raiders', 'MIA': 'Dolphins',
+    'MIN': 'Vikings', 'NE': 'Patriots', 'NO': 'Saints', 'NYG': 'Giants',
+    'NYJ': 'Jets', 'PHI': 'Eagles', 'PIT': 'Steelers', 'SEA': 'Seahawks',
+    'SF': '49ers', 'TB': 'Buccaneers', 'TEN': 'Titans', 'WAS': 'Commanders'
+}
 
 
 class WagersCog(commands.Cog):
@@ -18,58 +39,90 @@ class WagersCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.db_path = bot.db_path
+        self._ensure_tables()
     
-    def get_user_team(self, guild, user_id):
-        """Get the team abbreviation for a user based on their Discord role."""
-        member = guild.get_member(user_id)
-        if not member:
-            return None
+    def _ensure_tables(self):
+        """Ensure wagers table has all required columns."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
         
-        # NFL team abbreviations
-        nfl_teams = ['ARI', 'ATL', 'BAL', 'BUF', 'CAR', 'CHI', 'CIN', 'CLE', 
-                     'DAL', 'DEN', 'DET', 'GB', 'HOU', 'IND', 'JAX', 'KC', 
-                     'LAC', 'LAR', 'LV', 'MIA', 'MIN', 'NE', 'NO', 'NYG', 
-                     'NYJ', 'PHI', 'PIT', 'SEA', 'SF', 'TB', 'TEN', 'WAS']
+        # Check if we need to add new columns
+        cursor.execute("PRAGMA table_info(wagers)")
+        columns = [col[1] for col in cursor.fetchall()]
         
-        # Team name mappings
-        team_names = {
-            'Cardinals': 'ARI', 'Falcons': 'ATL', 'Ravens': 'BAL', 'Bills': 'BUF',
-            'Panthers': 'CAR', 'Bears': 'CHI', 'Bengals': 'CIN', 'Browns': 'CLE',
-            'Cowboys': 'DAL', 'Broncos': 'DEN', 'Lions': 'DET', 'Packers': 'GB',
-            'Texans': 'HOU', 'Colts': 'IND', 'Jaguars': 'JAX', 'Chiefs': 'KC',
-            'Chargers': 'LAC', 'Rams': 'LAR', 'Raiders': 'LV', 'Dolphins': 'MIA',
-            'Vikings': 'MIN', 'Patriots': 'NE', 'Saints': 'NO', 'Giants': 'NYG',
-            'Jets': 'NYJ', 'Eagles': 'PHI', 'Steelers': 'PIT', 'Seahawks': 'SEA',
-            '49ers': 'SF', 'Buccaneers': 'TB', 'Titans': 'TEN', 'Commanders': 'WAS'
-        }
+        # Add challenger_pick column if it doesn't exist
+        if 'challenger_pick' not in columns:
+            try:
+                cursor.execute('ALTER TABLE wagers ADD COLUMN challenger_pick TEXT')
+            except:
+                pass
         
-        for role in member.roles:
-            role_name = role.name.upper()
-            if role_name in nfl_teams:
-                return role_name
-            # Check team names
-            for name, abbr in team_names.items():
-                if name.lower() in role.name.lower():
-                    return abbr
+        # Add opponent_pick column if it doesn't exist
+        if 'opponent_pick' not in columns:
+            try:
+                cursor.execute('ALTER TABLE wagers ADD COLUMN opponent_pick TEXT')
+            except:
+                pass
+        
+        # Add game_winner column if it doesn't exist
+        if 'game_winner' not in columns:
+            try:
+                cursor.execute('ALTER TABLE wagers ADD COLUMN game_winner TEXT')
+            except:
+                pass
+        
+        conn.commit()
+        conn.close()
+    
+    def normalize_team(self, team_input: str) -> Optional[str]:
+        """Normalize team input to standard abbreviation."""
+        team_upper = team_input.upper().strip()
+        
+        # Direct abbreviation match
+        if team_upper in NFL_TEAMS:
+            return team_upper
+        
+        # Check team names
+        for abbr, name in TEAM_NAMES.items():
+            if name.lower() == team_input.lower() or name.lower() in team_input.lower():
+                return abbr
         
         return None
     
-    @app_commands.command(name="wager", description="Create a wager with another team owner")
+    async def team_autocomplete(self, interaction: discord.Interaction, current: str):
+        """Autocomplete for team selection."""
+        choices = []
+        current_lower = current.lower()
+        
+        for abbr in NFL_TEAMS:
+            name = TEAM_NAMES.get(abbr, abbr)
+            display = f"{name} ({abbr})"
+            if current_lower in abbr.lower() or current_lower in name.lower():
+                choices.append(app_commands.Choice(name=display, value=abbr))
+        
+        return choices[:25]  # Discord limit
+    
+    @app_commands.command(name="wager", description="Create a wager on any game")
     @app_commands.describe(
-        opponent="The team owner you want to wager against",
-        amount="Amount of the wager in dollars",
-        week="Week number (1-18 for regular season, or 19-22 for playoffs)",
-        description="Optional description for the wager"
+        opponent="The person you want to bet against",
+        amount="Amount of the wager in dollars (max $1,000)",
+        week="Week number (1-18 regular, 19-22 playoffs)",
+        away_team="The AWAY team in the game",
+        home_team="The HOME team in the game",
+        your_pick="Which team YOU are picking to win"
     )
+    @app_commands.autocomplete(away_team=team_autocomplete, home_team=team_autocomplete, your_pick=team_autocomplete)
     async def wager(
         self, 
         interaction: discord.Interaction, 
         opponent: discord.Member,
         amount: float,
         week: int,
-        description: str = None
+        away_team: str,
+        home_team: str,
+        your_pick: str
     ):
-        """Create a wager challenge against another team owner."""
+        """Create a wager challenge on any game."""
         await interaction.response.defer()
         
         # Validate amount
@@ -96,17 +149,35 @@ class WagersCog(commands.Cog):
             await interaction.followup.send("❌ You can't wager against a bot!", ephemeral=True)
             return
         
-        # Get teams for both users
-        challenger_team = self.get_user_team(interaction.guild, interaction.user.id)
-        opponent_team = self.get_user_team(interaction.guild, opponent.id)
+        # Normalize team inputs
+        away_team_norm = self.normalize_team(away_team)
+        home_team_norm = self.normalize_team(home_team)
+        your_pick_norm = self.normalize_team(your_pick)
         
-        if not challenger_team:
-            await interaction.followup.send("❌ You don't have a team role! Please contact an admin.", ephemeral=True)
+        if not away_team_norm:
+            await interaction.followup.send(f"❌ Invalid away team: {away_team}. Use team abbreviation (e.g., DAL, SF, GB).", ephemeral=True)
             return
         
-        if not opponent_team:
-            await interaction.followup.send(f"❌ {opponent.display_name} doesn't have a team role!", ephemeral=True)
+        if not home_team_norm:
+            await interaction.followup.send(f"❌ Invalid home team: {home_team}. Use team abbreviation (e.g., DAL, SF, GB).", ephemeral=True)
             return
+        
+        if not your_pick_norm:
+            await interaction.followup.send(f"❌ Invalid pick: {your_pick}. Use team abbreviation (e.g., DAL, SF, GB).", ephemeral=True)
+            return
+        
+        # Your pick must be one of the teams in the game
+        if your_pick_norm not in [away_team_norm, home_team_norm]:
+            await interaction.followup.send(f"❌ Your pick must be either {away_team_norm} or {home_team_norm}!", ephemeral=True)
+            return
+        
+        # Can't have same team as home and away
+        if away_team_norm == home_team_norm:
+            await interaction.followup.send("❌ Away team and home team can't be the same!", ephemeral=True)
+            return
+        
+        # Determine opponent's pick (opposite of yours)
+        opponent_pick = home_team_norm if your_pick_norm == away_team_norm else away_team_norm
         
         # Determine week type
         week_type = "regular" if week <= 18 else "playoffs"
@@ -114,34 +185,45 @@ class WagersCog(commands.Cog):
         # Get current season (use current year)
         season_year = datetime.now().year
         
-        # Check if wager already exists between these users for this week
+        # Check if wager already exists for this exact game between these users
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
         cursor.execute('''
             SELECT wager_id FROM wagers 
             WHERE season_year = ? AND week = ?
+            AND home_team_id = ? AND away_team_id = ?
             AND ((home_user_id = ? AND away_user_id = ?) OR (home_user_id = ? AND away_user_id = ?))
             AND winner_user_id IS NULL
-        ''', (season_year, week, interaction.user.id, opponent.id, opponent.id, interaction.user.id))
+        ''', (season_year, week, home_team_norm, away_team_norm, 
+              interaction.user.id, opponent.id, opponent.id, interaction.user.id))
         
         existing = cursor.fetchone()
         if existing:
             conn.close()
-            await interaction.followup.send(f"❌ You already have an active wager with {opponent.display_name} for Week {week}!", ephemeral=True)
+            await interaction.followup.send(
+                f"❌ You already have an active wager with {opponent.display_name} on {away_team_norm} @ {home_team_norm} for Week {week}!", 
+                ephemeral=True
+            )
             return
         
         # Create the wager
         cursor.execute('''
             INSERT INTO wagers (season_year, week, week_type, home_team_id, away_team_id, 
-                               home_user_id, away_user_id, amount, home_accepted)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
-        ''', (season_year, week, week_type, challenger_team, opponent_team, 
-              interaction.user.id, opponent.id, amount))
+                               home_user_id, away_user_id, amount, home_accepted, challenger_pick, opponent_pick)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+        ''', (season_year, week, week_type, home_team_norm, away_team_norm, 
+              interaction.user.id, opponent.id, amount, your_pick_norm, opponent_pick))
         
         wager_id = cursor.lastrowid
         conn.commit()
         conn.close()
+        
+        # Get team full names
+        away_name = TEAM_NAMES.get(away_team_norm, away_team_norm)
+        home_name = TEAM_NAMES.get(home_team_norm, home_team_norm)
+        pick_name = TEAM_NAMES.get(your_pick_norm, your_pick_norm)
+        opp_pick_name = TEAM_NAMES.get(opponent_pick, opponent_pick)
         
         # Create embed for the wager challenge
         embed = discord.Embed(
@@ -151,16 +233,15 @@ class WagersCog(commands.Cog):
         )
         
         embed.add_field(name="💰 Amount", value=f"${amount:.2f}", inline=True)
-        embed.add_field(name="📅 Week", value=f"Week {week} ({week_type.title()})", inline=True)
+        embed.add_field(name="📅 Season/Week", value=f"SZN {season_year} - Week {week}", inline=True)
         embed.add_field(name="🆔 Wager ID", value=f"#{wager_id}", inline=True)
-        embed.add_field(name="🏈 Matchup", value=f"{challenger_team} vs {opponent_team}", inline=False)
-        
-        if description:
-            embed.add_field(name="📝 Description", value=description, inline=False)
+        embed.add_field(name="🏈 Game", value=f"**{away_name}** @ **{home_name}**", inline=False)
+        embed.add_field(name=f"🎯 {interaction.user.display_name}'s Pick", value=f"**{pick_name}**", inline=True)
+        embed.add_field(name=f"🎯 {opponent.display_name}'s Pick", value=f"**{opp_pick_name}**", inline=True)
         
         embed.add_field(
             name="⏳ Status", 
-            value=f"Waiting for {opponent.mention} to accept!\nUse `/acceptwager {wager_id}` to accept or `/declinewager {wager_id}` to decline.",
+            value=f"Waiting for {opponent.mention} to accept!\n`/acceptwager {wager_id}` to accept\n`/declinewager {wager_id}` to decline",
             inline=False
         )
         
@@ -172,14 +253,17 @@ class WagersCog(commands.Cog):
         try:
             dm_embed = discord.Embed(
                 title="🎰 You've Been Challenged to a Wager!",
-                description=f"{interaction.user.display_name} wants to wager ${amount:.2f} on Week {week}!",
+                description=f"**{interaction.user.display_name}** wants to bet **${amount:.2f}** on a game!",
                 color=discord.Color.gold()
             )
+            dm_embed.add_field(name="📅 Season/Week", value=f"SZN {season_year} - Week {week}", inline=True)
             dm_embed.add_field(name="🆔 Wager ID", value=f"#{wager_id}", inline=True)
-            dm_embed.add_field(name="🏈 Matchup", value=f"{challenger_team} vs {opponent_team}", inline=True)
+            dm_embed.add_field(name="🏈 Game", value=f"**{away_name}** @ **{home_name}**", inline=False)
+            dm_embed.add_field(name=f"Their Pick", value=f"**{pick_name}**", inline=True)
+            dm_embed.add_field(name=f"Your Pick", value=f"**{opp_pick_name}**", inline=True)
             dm_embed.add_field(
                 name="📋 Actions",
-                value=f"Use `/acceptwager {wager_id}` to accept\nUse `/declinewager {wager_id}` to decline",
+                value=f"`/acceptwager {wager_id}` to accept\n`/declinewager {wager_id}` to decline",
                 inline=False
             )
             await opponent.send(embed=dm_embed)
@@ -195,10 +279,10 @@ class WagersCog(commands.Cog):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Get the wager
         cursor.execute('''
             SELECT wager_id, season_year, week, home_team_id, away_team_id, 
-                   home_user_id, away_user_id, amount, away_accepted, winner_user_id
+                   home_user_id, away_user_id, amount, away_accepted, winner_user_id,
+                   challenger_pick, opponent_pick
             FROM wagers WHERE wager_id = ?
         ''', (wager_id,))
         
@@ -209,34 +293,32 @@ class WagersCog(commands.Cog):
             await interaction.followup.send(f"❌ Wager #{wager_id} not found!", ephemeral=True)
             return
         
-        wager_id, season, week, home_team, away_team, home_user, away_user, amount, accepted, winner = wager
+        wager_id, season, week, home_team, away_team, home_user, away_user, amount, accepted, winner, challenger_pick, opponent_pick = wager
         
-        # Check if user is the opponent
         if interaction.user.id != away_user:
             conn.close()
             await interaction.followup.send("❌ This wager wasn't sent to you!", ephemeral=True)
             return
         
-        # Check if already accepted
         if accepted:
             conn.close()
             await interaction.followup.send("❌ This wager has already been accepted!", ephemeral=True)
             return
         
-        # Check if already has a winner
         if winner:
             conn.close()
             await interaction.followup.send("❌ This wager has already been completed!", ephemeral=True)
             return
         
-        # Accept the wager
         cursor.execute('UPDATE wagers SET away_accepted = 1 WHERE wager_id = ?', (wager_id,))
         conn.commit()
         conn.close()
         
-        # Get challenger mention
         challenger = interaction.guild.get_member(home_user)
-        challenger_mention = challenger.mention if challenger else f"User {home_user}"
+        challenger_mention = challenger.mention if challenger else f"<@{home_user}>"
+        
+        away_name = TEAM_NAMES.get(away_team, away_team)
+        home_name = TEAM_NAMES.get(home_team, home_team)
         
         embed = discord.Embed(
             title="✅ Wager Accepted!",
@@ -245,11 +327,17 @@ class WagersCog(commands.Cog):
         )
         embed.add_field(name="🆔 Wager ID", value=f"#{wager_id}", inline=True)
         embed.add_field(name="💰 Amount", value=f"${amount:.2f}", inline=True)
-        embed.add_field(name="📅 Week", value=f"Week {week}", inline=True)
-        embed.add_field(name="🏈 Matchup", value=f"{home_team} vs {away_team}", inline=False)
+        embed.add_field(name="📅 Season/Week", value=f"SZN {season} - Week {week}", inline=True)
+        embed.add_field(name="🏈 Game", value=f"**{away_name}** @ **{home_name}**", inline=False)
+        
+        if challenger_pick and opponent_pick:
+            challenger_name = challenger.display_name if challenger else "Challenger"
+            embed.add_field(name=f"🎯 {challenger_name}'s Pick", value=f"**{TEAM_NAMES.get(challenger_pick, challenger_pick)}**", inline=True)
+            embed.add_field(name=f"🎯 {interaction.user.display_name}'s Pick", value=f"**{TEAM_NAMES.get(opponent_pick, opponent_pick)}**", inline=True)
+        
         embed.add_field(
             name="📋 Next Steps",
-            value="After the game, the winner should use `/wagerwin` to claim victory!",
+            value="After the game, the winner uses `/wagerwin` to claim victory!",
             inline=False
         )
         
@@ -264,9 +352,8 @@ class WagersCog(commands.Cog):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Get the wager
         cursor.execute('''
-            SELECT away_user_id, home_user_id, amount, away_accepted, winner_user_id
+            SELECT wager_id, home_user_id, away_user_id, amount, away_accepted
             FROM wagers WHERE wager_id = ?
         ''', (wager_id,))
         
@@ -277,42 +364,92 @@ class WagersCog(commands.Cog):
             await interaction.followup.send(f"❌ Wager #{wager_id} not found!", ephemeral=True)
             return
         
-        away_user, home_user, amount, accepted, winner = wager
+        wager_id, home_user, away_user, amount, accepted = wager
         
-        # Check if user is the opponent or the creator
-        if interaction.user.id not in [away_user, home_user]:
+        if interaction.user.id != away_user:
             conn.close()
-            await interaction.followup.send("❌ This wager doesn't involve you!", ephemeral=True)
+            await interaction.followup.send("❌ This wager wasn't sent to you!", ephemeral=True)
             return
         
-        # Check if already accepted
         if accepted:
             conn.close()
-            await interaction.followup.send("❌ This wager has already been accepted and cannot be declined!", ephemeral=True)
+            await interaction.followup.send("❌ This wager has already been accepted! You can't decline it now.", ephemeral=True)
             return
         
-        # Delete the wager
         cursor.execute('DELETE FROM wagers WHERE wager_id = ?', (wager_id,))
         conn.commit()
         conn.close()
         
-        await interaction.followup.send(f"❌ Wager #{wager_id} has been declined and removed.")
+        challenger = interaction.guild.get_member(home_user)
+        challenger_mention = challenger.mention if challenger else f"<@{home_user}>"
+        
+        embed = discord.Embed(
+            title="❌ Wager Declined",
+            description=f"{interaction.user.mention} has declined the ${amount:.2f} wager from {challenger_mention}.",
+            color=discord.Color.red()
+        )
+        
+        await interaction.followup.send(embed=embed)
     
-    @app_commands.command(name="mywagers", description="View your active wagers")
-    async def mywagers(self, interaction: discord.Interaction):
-        """View all your active wagers."""
+    @app_commands.command(name="cancelwager", description="Cancel a wager you created (before it's accepted)")
+    @app_commands.describe(wager_id="The ID of the wager to cancel")
+    async def cancelwager(self, interaction: discord.Interaction, wager_id: int):
+        """Cancel a wager that hasn't been accepted yet."""
         await interaction.response.defer()
         
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Get all wagers involving this user
+        cursor.execute('''
+            SELECT wager_id, home_user_id, away_user_id, amount, away_accepted
+            FROM wagers WHERE wager_id = ?
+        ''', (wager_id,))
+        
+        wager = cursor.fetchone()
+        
+        if not wager:
+            conn.close()
+            await interaction.followup.send(f"❌ Wager #{wager_id} not found!", ephemeral=True)
+            return
+        
+        wager_id, home_user, away_user, amount, accepted = wager
+        
+        if interaction.user.id != home_user:
+            conn.close()
+            await interaction.followup.send("❌ You didn't create this wager!", ephemeral=True)
+            return
+        
+        if accepted:
+            conn.close()
+            await interaction.followup.send("❌ This wager has already been accepted! You can't cancel it now.", ephemeral=True)
+            return
+        
+        cursor.execute('DELETE FROM wagers WHERE wager_id = ?', (wager_id,))
+        conn.commit()
+        conn.close()
+        
+        embed = discord.Embed(
+            title="🚫 Wager Cancelled",
+            description=f"Wager #{wager_id} for ${amount:.2f} has been cancelled.",
+            color=discord.Color.orange()
+        )
+        
+        await interaction.followup.send(embed=embed)
+    
+    @app_commands.command(name="mywagers", description="View all your wagers")
+    async def mywagers(self, interaction: discord.Interaction):
+        """View all wagers for the user."""
+        await interaction.response.defer()
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
         cursor.execute('''
             SELECT wager_id, season_year, week, home_team_id, away_team_id, 
-                   home_user_id, away_user_id, amount, home_accepted, away_accepted, 
-                   winner_user_id, is_paid
+                   home_user_id, away_user_id, amount, away_accepted, winner_user_id, is_paid,
+                   challenger_pick, opponent_pick
             FROM wagers 
-            WHERE (home_user_id = ? OR away_user_id = ?)
+            WHERE home_user_id = ? OR away_user_id = ?
             ORDER BY season_year DESC, week DESC
         ''', (interaction.user.id, interaction.user.id))
         
@@ -320,77 +457,80 @@ class WagersCog(commands.Cog):
         conn.close()
         
         if not wagers:
-            await interaction.followup.send("📭 You don't have any wagers yet! Use `/wager` to create one.", ephemeral=True)
+            await interaction.followup.send("📭 You don't have any wagers yet! Use `/wager` to create one.")
             return
-        
-        # Separate into categories
-        pending = []
-        active = []
-        completed = []
-        
-        for w in wagers:
-            wager_id, season, week, home_team, away_team, home_user, away_user, amount, home_acc, away_acc, winner, paid = w
-            
-            # Get opponent info
-            opponent_id = away_user if home_user == interaction.user.id else home_user
-            opponent = interaction.guild.get_member(opponent_id)
-            opponent_name = opponent.display_name if opponent else f"User {opponent_id}"
-            
-            wager_info = f"**#{wager_id}** - Week {week}: ${amount:.2f} vs {opponent_name}"
-            
-            if winner:
-                status = "✅ Won" if winner == interaction.user.id else "❌ Lost"
-                paid_status = " (Paid)" if paid else " (Unpaid)"
-                completed.append(f"{wager_info} - {status}{paid_status}")
-            elif home_acc and away_acc:
-                active.append(f"{wager_info} - 🎮 In Progress")
-            else:
-                if home_user == interaction.user.id:
-                    pending.append(f"{wager_info} - ⏳ Waiting for acceptance")
-                else:
-                    pending.append(f"{wager_info} - 📩 Needs your response")
         
         embed = discord.Embed(
             title=f"🎰 {interaction.user.display_name}'s Wagers",
             color=discord.Color.gold()
         )
         
+        pending = []
+        active = []
+        completed = []
+        
+        for w in wagers:
+            wager_id, season, week, home_team, away_team, home_user, away_user, amount, accepted, winner, paid, challenger_pick, opponent_pick = w
+            
+            is_challenger = interaction.user.id == home_user
+            other_user_id = away_user if is_challenger else home_user
+            other_user = interaction.guild.get_member(other_user_id)
+            other_name = other_user.display_name if other_user else f"<@{other_user_id}>"
+            
+            away_name = TEAM_NAMES.get(away_team, away_team)
+            home_name = TEAM_NAMES.get(home_team, home_team)
+            
+            my_pick = challenger_pick if is_challenger else opponent_pick
+            my_pick_name = TEAM_NAMES.get(my_pick, my_pick) if my_pick else "?"
+            
+            line = f"**#{wager_id}** | ${amount:.2f} | SZN {season} Wk {week}\n"
+            line += f"  {away_name} @ {home_name} | My Pick: **{my_pick_name}** | vs {other_name}"
+            
+            if winner:
+                won = winner == interaction.user.id
+                status = "✅ WON" if won else "❌ LOST"
+                if paid:
+                    status += " (Paid)"
+                completed.append(f"{line}\n  {status}")
+            elif accepted:
+                active.append(f"{line}\n  ⚔️ Active")
+            else:
+                if is_challenger:
+                    pending.append(f"{line}\n  ⏳ Waiting for {other_name}")
+                else:
+                    pending.append(f"{line}\n  📩 Pending your response")
+        
         if pending:
-            embed.add_field(name="⏳ Pending", value="\n".join(pending[:5]) or "None", inline=False)
-        
+            embed.add_field(name="⏳ Pending", value="\n\n".join(pending[:5]) or "None", inline=False)
         if active:
-            embed.add_field(name="🎮 Active", value="\n".join(active[:5]) or "None", inline=False)
-        
+            embed.add_field(name="⚔️ Active", value="\n\n".join(active[:5]) or "None", inline=False)
         if completed:
-            embed.add_field(name="✅ Completed", value="\n".join(completed[:5]) or "None", inline=False)
-        
-        # Calculate stats
-        wins = sum(1 for w in wagers if w[10] == interaction.user.id)
-        losses = sum(1 for w in wagers if w[10] and w[10] != interaction.user.id)
-        total_won = sum(w[7] for w in wagers if w[10] == interaction.user.id)
-        total_lost = sum(w[7] for w in wagers if w[10] and w[10] != interaction.user.id)
-        
-        embed.add_field(
-            name="📊 Stats",
-            value=f"Record: **{wins}-{losses}**\nNet: **${total_won - total_lost:+.2f}**",
-            inline=False
-        )
+            embed.add_field(name="✅ Completed", value="\n\n".join(completed[:5]) or "None", inline=False)
         
         await interaction.followup.send(embed=embed)
     
-    @app_commands.command(name="wagerwin", description="Claim victory on a wager after winning the game")
-    @app_commands.describe(wager_id="The ID of the wager you won")
-    async def wagerwin(self, interaction: discord.Interaction, wager_id: int):
-        """Claim victory on a wager."""
+    @app_commands.command(name="wagerwin", description="Claim victory on a wager after the game")
+    @app_commands.describe(
+        wager_id="The ID of the wager",
+        winning_team="The team that won the game"
+    )
+    @app_commands.autocomplete(winning_team=team_autocomplete)
+    async def wagerwin(self, interaction: discord.Interaction, wager_id: int, winning_team: str):
+        """Claim victory on a completed wager by specifying the game winner."""
         await interaction.response.defer()
+        
+        winning_team_norm = self.normalize_team(winning_team)
+        if not winning_team_norm:
+            await interaction.followup.send(f"❌ Invalid team: {winning_team}", ephemeral=True)
+            return
         
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Get the wager
         cursor.execute('''
-            SELECT wager_id, week, home_team_id, away_team_id, 
-                   home_user_id, away_user_id, amount, home_accepted, away_accepted, winner_user_id
+            SELECT wager_id, season_year, week, home_team_id, away_team_id, 
+                   home_user_id, away_user_id, amount, away_accepted, winner_user_id,
+                   challenger_pick, opponent_pick
             FROM wagers WHERE wager_id = ?
         ''', (wager_id,))
         
@@ -401,81 +541,87 @@ class WagersCog(commands.Cog):
             await interaction.followup.send(f"❌ Wager #{wager_id} not found!", ephemeral=True)
             return
         
-        wager_id, week, home_team, away_team, home_user, away_user, amount, home_acc, away_acc, winner = wager
+        wager_id, season, week, home_team, away_team, home_user, away_user, amount, accepted, winner, challenger_pick, opponent_pick = wager
         
-        # Check if user is involved
+        # Check if user is part of this wager
         if interaction.user.id not in [home_user, away_user]:
             conn.close()
-            await interaction.followup.send("❌ This wager doesn't involve you!", ephemeral=True)
+            await interaction.followup.send("❌ You're not part of this wager!", ephemeral=True)
             return
         
-        # Check if wager was accepted
-        if not (home_acc and away_acc):
+        if not accepted:
             conn.close()
             await interaction.followup.send("❌ This wager hasn't been accepted yet!", ephemeral=True)
             return
         
-        # Check if already has a winner
         if winner:
             conn.close()
-            await interaction.followup.send("❌ This wager already has a winner!", ephemeral=True)
+            await interaction.followup.send("❌ This wager has already been settled!", ephemeral=True)
             return
         
-        # Get the opponent
-        opponent_id = away_user if home_user == interaction.user.id else home_user
-        opponent = interaction.guild.get_member(opponent_id)
-        opponent_mention = opponent.mention if opponent else f"<@{opponent_id}>"
+        # Validate winning team is one of the teams in the game
+        if winning_team_norm not in [home_team, away_team]:
+            conn.close()
+            await interaction.followup.send(
+                f"❌ {winning_team_norm} wasn't in this game! The game was {away_team} @ {home_team}.", 
+                ephemeral=True
+            )
+            return
         
-        # Get winner's team
-        winner_team = home_team if home_user == interaction.user.id else away_team
+        # Determine who won the wager based on picks
+        if challenger_pick == winning_team_norm:
+            wager_winner = home_user
+            wager_loser = away_user
+        else:
+            wager_winner = away_user
+            wager_loser = home_user
         
-        # Set the winner
+        # Update the wager
         cursor.execute('''
-            UPDATE wagers SET winner_team_id = ?, winner_user_id = ? WHERE wager_id = ?
-        ''', (winner_team, interaction.user.id, wager_id))
-        
-        # Update franchise stats
-        cursor.execute('''
-            UPDATE franchise_stats SET total_wager_wins = total_wager_wins + ? 
-            WHERE user_discord_id = ?
-        ''', (amount, interaction.user.id))
-        
-        cursor.execute('''
-            UPDATE franchise_stats SET total_wager_losses = total_wager_losses + ? 
-            WHERE user_discord_id = ?
-        ''', (amount, opponent_id))
-        
+            UPDATE wagers SET winner_user_id = ?, game_winner = ? WHERE wager_id = ?
+        ''', (wager_winner, winning_team_norm, wager_id))
         conn.commit()
         conn.close()
         
+        winner_member = interaction.guild.get_member(wager_winner)
+        loser_member = interaction.guild.get_member(wager_loser)
+        winner_mention = winner_member.mention if winner_member else f"<@{wager_winner}>"
+        loser_mention = loser_member.mention if loser_member else f"<@{wager_loser}>"
+        
+        winning_team_name = TEAM_NAMES.get(winning_team_norm, winning_team_norm)
+        away_name = TEAM_NAMES.get(away_team, away_team)
+        home_name = TEAM_NAMES.get(home_team, home_team)
+        
         embed = discord.Embed(
-            title="🏆 Wager Victory Claimed!",
-            description=f"{interaction.user.mention} claims victory over {opponent_mention}!",
+            title="🏆 Wager Settled!",
+            description=f"**{winning_team_name}** won the game!",
             color=discord.Color.green()
         )
         embed.add_field(name="🆔 Wager ID", value=f"#{wager_id}", inline=True)
         embed.add_field(name="💰 Amount", value=f"${amount:.2f}", inline=True)
-        embed.add_field(name="📅 Week", value=f"Week {week}", inline=True)
+        embed.add_field(name="🏈 Game", value=f"{away_name} @ {home_name}", inline=True)
+        embed.add_field(name="🏆 Winner", value=winner_mention, inline=True)
+        embed.add_field(name="💸 Owes", value=loser_mention, inline=True)
         embed.add_field(
-            name="💸 Payment",
-            value=f"{opponent_mention} owes {interaction.user.mention} **${amount:.2f}**\nUse `/markwagerpaid {wager_id}` once paid!",
+            name="📋 Next Steps",
+            value=f"{loser_mention} pays ${amount:.2f} to {winner_mention}\nThen {winner_mention} uses `/markwagerpaid {wager_id}` to confirm",
             inline=False
         )
         
         await interaction.followup.send(embed=embed)
     
-    @app_commands.command(name="markwagerpaid", description="Mark a wager as paid")
+    @app_commands.command(name="markwagerpaid", description="Mark a wager as paid (winner confirms)")
     @app_commands.describe(wager_id="The ID of the wager to mark as paid")
     async def markwagerpaid(self, interaction: discord.Interaction, wager_id: int):
-        """Mark a wager as paid (winner confirms receipt)."""
+        """Mark a wager as paid after receiving payment."""
         await interaction.response.defer()
         
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Get the wager
         cursor.execute('''
-            SELECT winner_user_id, home_user_id, away_user_id, amount, is_paid
+            SELECT wager_id, home_user_id, away_user_id, amount, winner_user_id, is_paid,
+                   home_team_id, away_team_id, season_year, week
             FROM wagers WHERE wager_id = ?
         ''', (wager_id,))
         
@@ -486,36 +632,34 @@ class WagersCog(commands.Cog):
             await interaction.followup.send(f"❌ Wager #{wager_id} not found!", ephemeral=True)
             return
         
-        winner, home_user, away_user, amount, is_paid = wager
+        wager_id, home_user, away_user, amount, winner, paid, home_team, away_team, season, week = wager
         
-        # Check if wager has a winner
         if not winner:
             conn.close()
-            await interaction.followup.send("❌ This wager doesn't have a winner yet!", ephemeral=True)
+            await interaction.followup.send("❌ This wager hasn't been settled yet! Use `/wagerwin` first.", ephemeral=True)
             return
         
-        # Only winner or admin can mark as paid
-        is_admin = interaction.user.guild_permissions.administrator
-        if interaction.user.id != winner and not is_admin:
+        # Only winner can mark as paid
+        if interaction.user.id != winner:
             conn.close()
-            await interaction.followup.send("❌ Only the winner can mark this wager as paid!", ephemeral=True)
+            await interaction.followup.send("❌ Only the winner can confirm payment!", ephemeral=True)
             return
         
-        # Check if already paid
-        if is_paid:
+        if paid:
             conn.close()
-            await interaction.followup.send("❌ This wager is already marked as paid!", ephemeral=True)
+            await interaction.followup.send("❌ This wager has already been marked as paid!", ephemeral=True)
             return
         
-        # Mark as paid
         cursor.execute('UPDATE wagers SET is_paid = 1 WHERE wager_id = ?', (wager_id,))
         conn.commit()
         conn.close()
         
-        # Get loser info
-        loser_id = away_user if winner == home_user else home_user
-        loser = interaction.guild.get_member(loser_id)
-        loser_mention = loser.mention if loser else f"<@{loser_id}>"
+        loser = away_user if winner == home_user else home_user
+        loser_member = interaction.guild.get_member(loser)
+        loser_mention = loser_member.mention if loser_member else f"<@{loser}>"
+        
+        away_name = TEAM_NAMES.get(away_team, away_team)
+        home_name = TEAM_NAMES.get(home_team, home_team)
         
         embed = discord.Embed(
             title="💰 Wager Paid!",
@@ -523,6 +667,7 @@ class WagersCog(commands.Cog):
             color=discord.Color.green()
         )
         embed.add_field(name="💵 Amount", value=f"${amount:.2f}", inline=True)
+        embed.add_field(name="🏈 Game", value=f"{away_name} @ {home_name} (SZN {season} Wk {week})", inline=True)
         embed.add_field(name="👤 Paid by", value=loser_mention, inline=True)
         
         await interaction.followup.send(embed=embed)
@@ -537,7 +682,7 @@ class WagersCog(commands.Cog):
         
         # Get all completed wagers
         cursor.execute('''
-            SELECT home_user_id, away_user_id, amount, winner_user_id
+            SELECT home_user_id, away_user_id, amount, winner_user_id, challenger_pick, opponent_pick
             FROM wagers WHERE winner_user_id IS NOT NULL
         ''')
         
@@ -565,7 +710,7 @@ class WagersCog(commands.Cog):
         user_stats = {}
         
         # Process wagers
-        for home_user, away_user, amount, winner in wagers:
+        for home_user, away_user, amount, winner, challenger_pick, opponent_pick in wagers:
             for user_id in [home_user, away_user]:
                 if user_id not in user_stats:
                     user_stats[user_id] = {
@@ -653,53 +798,9 @@ class WagersCog(commands.Cog):
             inline=False
         )
         
-        embed.set_footer(text="Use /wager to challenge someone! | Use /topearners for wager-only stats")
+        embed.set_footer(text="Use /wager to challenge someone! | Use /topearners for detailed stats")
         
         await interaction.followup.send(embed=embed)
-    
-    @app_commands.command(name="cancelwager", description="Cancel a wager you created (before it's accepted)")
-    @app_commands.describe(wager_id="The ID of the wager to cancel")
-    async def cancelwager(self, interaction: discord.Interaction, wager_id: int):
-        """Cancel a wager that hasn't been accepted yet."""
-        await interaction.response.defer()
-        
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Get the wager
-        cursor.execute('''
-            SELECT home_user_id, away_accepted, winner_user_id
-            FROM wagers WHERE wager_id = ?
-        ''', (wager_id,))
-        
-        wager = cursor.fetchone()
-        
-        if not wager:
-            conn.close()
-            await interaction.followup.send(f"❌ Wager #{wager_id} not found!", ephemeral=True)
-            return
-        
-        home_user, accepted, winner = wager
-        
-        # Check if user is the creator
-        is_admin = interaction.user.guild_permissions.administrator
-        if interaction.user.id != home_user and not is_admin:
-            conn.close()
-            await interaction.followup.send("❌ Only the wager creator can cancel it!", ephemeral=True)
-            return
-        
-        # Check if already accepted
-        if accepted:
-            conn.close()
-            await interaction.followup.send("❌ This wager has already been accepted and cannot be cancelled!", ephemeral=True)
-            return
-        
-        # Delete the wager
-        cursor.execute('DELETE FROM wagers WHERE wager_id = ?', (wager_id,))
-        conn.commit()
-        conn.close()
-        
-        await interaction.followup.send(f"✅ Wager #{wager_id} has been cancelled.")
 
 
 async def setup(bot):
