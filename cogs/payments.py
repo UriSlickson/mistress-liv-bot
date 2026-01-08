@@ -501,41 +501,75 @@ class PaymentsCog(commands.Cog):
     @app_commands.command(name="topearners", description="View the top earners leaderboard")
     @app_commands.describe(season="Season to view (optional)")
     async def top_earners(self, interaction: discord.Interaction, season: Optional[int] = None):
-        """Show leaderboard of top earners."""
+        """Show leaderboard of top earners (combining wagers + season payouts)."""
+        await interaction.response.defer()
+        
         conn = self.get_db_connection()
         cursor = conn.cursor()
         
-        # Get earnings from franchise_profitability table
-        if season:
-            cursor.execute('''
-                SELECT user_discord_id, playoff_earnings, wager_profit, net_profit
-                FROM franchise_profitability
-                WHERE season = ?
-                ORDER BY net_profit DESC
-                LIMIT 10
-            ''', (season,))
-        else:
-            cursor.execute('''
-                SELECT user_discord_id, SUM(playoff_earnings) as total_playoff, 
-                       SUM(wager_profit) as total_wager, SUM(net_profit) as total_net
-                FROM franchise_profitability
-                GROUP BY user_discord_id
-                ORDER BY total_net DESC
-                LIMIT 10
-            ''')
+        # Get all completed wagers
+        cursor.execute('''
+            SELECT home_user_id, away_user_id, amount, winner_user_id
+            FROM wagers WHERE winner_user_id IS NOT NULL
+        ''')
+        wagers = cursor.fetchall()
         
-        results = cursor.fetchall()
+        # Get season payouts received
+        cursor.execute('''
+            SELECT payee_discord_id, SUM(amount) as total_earned
+            FROM payments WHERE is_paid = 1
+            GROUP BY payee_discord_id
+        ''')
+        season_earnings = {row[0]: row[1] for row in cursor.fetchall()}
+        
+        # Get season dues paid
+        cursor.execute('''
+            SELECT payer_discord_id, SUM(amount) as total_paid
+            FROM payments WHERE is_paid = 1
+            GROUP BY payer_discord_id
+        ''')
+        season_dues = {row[0]: row[1] for row in cursor.fetchall()}
+        
         conn.close()
         
-        if not results:
-            await interaction.response.send_message(
-                "📊 No earnings data available yet!",
-                ephemeral=True
-            )
+        # Calculate combined stats for each user
+        user_stats = {}
+        
+        # Process wagers
+        for home_user, away_user, amount, winner in wagers:
+            for user_id in [home_user, away_user]:
+                if user_id and user_id not in user_stats:
+                    user_stats[user_id] = {'wager_won': 0.0, 'wager_lost': 0.0, 'season_earned': 0.0, 'season_paid': 0.0}
+            
+            if winner:
+                loser = away_user if winner == home_user else home_user
+                if winner:
+                    user_stats[winner]['wager_won'] += amount
+                if loser:
+                    user_stats[loser]['wager_lost'] += amount
+        
+        # Add season earnings/dues
+        all_users = set(list(season_earnings.keys()) + list(season_dues.keys()) + list(user_stats.keys()))
+        for user_id in all_users:
+            if user_id and user_id not in user_stats:
+                user_stats[user_id] = {'wager_won': 0.0, 'wager_lost': 0.0, 'season_earned': 0.0, 'season_paid': 0.0}
+            if user_id:
+                user_stats[user_id]['season_earned'] = season_earnings.get(user_id, 0.0)
+                user_stats[user_id]['season_paid'] = season_dues.get(user_id, 0.0)
+        
+        if not user_stats:
+            await interaction.followup.send("📊 No earnings data available yet!", ephemeral=True)
             return
         
+        # Calculate net and sort
+        def calc_net(stats):
+            return (stats['wager_won'] - stats['wager_lost']) + (stats['season_earned'] - stats['season_paid'])
+        
+        sorted_users = sorted(user_stats.items(), key=lambda x: calc_net(x[1]), reverse=True)[:10]
+        
         embed = discord.Embed(
-            title=f"🏆 Top Earners{f' - Season {season}' if season else ' (All Time)'}",
+            title=f"🏆 Top Earners (All Time)",
+            description="Combined wager wins + season payouts",
             color=discord.Color.gold(),
             timestamp=datetime.now()
         )
@@ -543,55 +577,94 @@ class PaymentsCog(commands.Cog):
         leaderboard = ""
         medals = ["🥇", "🥈", "🥉"]
         
-        for i, (user_id, playoff, wager, net) in enumerate(results):
+        for i, (user_id, stats) in enumerate(sorted_users):
             member = interaction.guild.get_member(user_id)
-            name = member.display_name if member else f"User {user_id}"
+            name = member.display_name if member else f"<@{user_id}>"
+            net = calc_net(stats)
+            wager_net = stats['wager_won'] - stats['wager_lost']
+            season_net = stats['season_earned'] - stats['season_paid']
             medal = medals[i] if i < 3 else f"{i+1}."
-            leaderboard += f"{medal} **{name}**: ${net:.2f}\n"
+            leaderboard += f"{medal} **{name}**: **${net:+.2f}**\n    └ Wagers: ${wager_net:+.2f} | Season: ${season_net:+.2f}\n"
         
-        embed.description = leaderboard
+        embed.description = leaderboard or "No data yet"
         embed.set_footer(text="Keep grinding! 💰")
         
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="toplosers", description="View the biggest losers leaderboard")
     @app_commands.describe(season="Season to view (optional)")
     async def top_losers(self, interaction: discord.Interaction, season: Optional[int] = None):
-        """Show leaderboard of biggest losers (most dues paid)."""
+        """Show leaderboard of biggest losers (combining wagers + season dues)."""
+        await interaction.response.defer()
+        
         conn = self.get_db_connection()
         cursor = conn.cursor()
         
-        # Get losses from franchise_profitability table
-        if season:
-            cursor.execute('''
-                SELECT user_discord_id, dues_paid, wager_profit, net_profit
-                FROM franchise_profitability
-                WHERE season = ?
-                ORDER BY net_profit ASC
-                LIMIT 10
-            ''', (season,))
-        else:
-            cursor.execute('''
-                SELECT user_discord_id, SUM(dues_paid) as total_dues, 
-                       SUM(wager_profit) as total_wager, SUM(net_profit) as total_net
-                FROM franchise_profitability
-                GROUP BY user_discord_id
-                ORDER BY total_net ASC
-                LIMIT 10
-            ''')
+        # Get all completed wagers
+        cursor.execute('''
+            SELECT home_user_id, away_user_id, amount, winner_user_id
+            FROM wagers WHERE winner_user_id IS NOT NULL
+        ''')
+        wagers = cursor.fetchall()
         
-        results = cursor.fetchall()
+        # Get season payouts received
+        cursor.execute('''
+            SELECT payee_discord_id, SUM(amount) as total_earned
+            FROM payments WHERE is_paid = 1
+            GROUP BY payee_discord_id
+        ''')
+        season_earnings = {row[0]: row[1] for row in cursor.fetchall()}
+        
+        # Get season dues paid
+        cursor.execute('''
+            SELECT payer_discord_id, SUM(amount) as total_paid
+            FROM payments WHERE is_paid = 1
+            GROUP BY payer_discord_id
+        ''')
+        season_dues = {row[0]: row[1] for row in cursor.fetchall()}
+        
         conn.close()
         
-        if not results:
-            await interaction.response.send_message(
-                "📊 No data available yet!",
-                ephemeral=True
-            )
+        # Calculate combined stats for each user
+        user_stats = {}
+        
+        # Process wagers
+        for home_user, away_user, amount, winner in wagers:
+            for user_id in [home_user, away_user]:
+                if user_id and user_id not in user_stats:
+                    user_stats[user_id] = {'wager_won': 0.0, 'wager_lost': 0.0, 'season_earned': 0.0, 'season_paid': 0.0}
+            
+            if winner:
+                loser = away_user if winner == home_user else home_user
+                if winner:
+                    user_stats[winner]['wager_won'] += amount
+                if loser:
+                    user_stats[loser]['wager_lost'] += amount
+        
+        # Add season earnings/dues
+        all_users = set(list(season_earnings.keys()) + list(season_dues.keys()) + list(user_stats.keys()))
+        for user_id in all_users:
+            if user_id and user_id not in user_stats:
+                user_stats[user_id] = {'wager_won': 0.0, 'wager_lost': 0.0, 'season_earned': 0.0, 'season_paid': 0.0}
+            if user_id:
+                user_stats[user_id]['season_earned'] = season_earnings.get(user_id, 0.0)
+                user_stats[user_id]['season_paid'] = season_dues.get(user_id, 0.0)
+        
+        if not user_stats:
+            await interaction.followup.send("📊 No data available yet!", ephemeral=True)
             return
         
+        # Calculate net and sort (ascending for losers)
+        def calc_net(stats):
+            return (stats['wager_won'] - stats['wager_lost']) + (stats['season_earned'] - stats['season_paid'])
+        
+        # Only show users with negative net
+        losers = [(uid, stats) for uid, stats in user_stats.items() if calc_net(stats) < 0]
+        sorted_users = sorted(losers, key=lambda x: calc_net(x[1]))[:10]
+        
         embed = discord.Embed(
-            title=f"📉 Biggest Losers{f' - Season {season}' if season else ' (All Time)'}",
+            title=f"📉 Biggest Losers (All Time)",
+            description="Combined wager losses + season dues paid",
             color=discord.Color.red(),
             timestamp=datetime.now()
         )
@@ -599,16 +672,19 @@ class PaymentsCog(commands.Cog):
         leaderboard = ""
         shame_emojis = ["💩", "🤡", "😭"]
         
-        for i, (user_id, dues, wager, net) in enumerate(results):
+        for i, (user_id, stats) in enumerate(sorted_users):
             member = interaction.guild.get_member(user_id)
-            name = member.display_name if member else f"User {user_id}"
+            name = member.display_name if member else f"<@{user_id}>"
+            net = calc_net(stats)
+            wager_net = stats['wager_won'] - stats['wager_lost']
+            season_net = stats['season_earned'] - stats['season_paid']
             emoji = shame_emojis[i] if i < 3 else f"{i+1}."
-            leaderboard += f"{emoji} **{name}**: ${net:.2f}\n"
+            leaderboard += f"{emoji} **{name}**: **${net:+.2f}**\n    └ Wagers: ${wager_net:+.2f} | Season: ${season_net:+.2f}\n"
         
-        embed.description = leaderboard
+        embed.description = leaderboard or "No losers yet! Everyone's winning! 🎉"
         embed.set_footer(text="Git gud! 🎮")
         
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="clearpayment", description="[Admin] Delete a specific payment")
     @app_commands.default_permissions(administrator=True)

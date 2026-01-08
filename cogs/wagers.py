@@ -77,8 +77,8 @@ class WagersCog(commands.Cog):
             await interaction.followup.send("❌ Wager amount must be greater than $0!", ephemeral=True)
             return
         
-        if amount > 100:
-            await interaction.followup.send("❌ Maximum wager amount is $100!", ephemeral=True)
+        if amount > 1000:
+            await interaction.followup.send("❌ Maximum wager amount is $1,000!", ephemeral=True)
             return
         
         # Validate week
@@ -542,38 +542,76 @@ class WagersCog(commands.Cog):
         ''')
         
         wagers = cursor.fetchall()
+        
+        # Get season payouts from payments table (earnings received)
+        cursor.execute('''
+            SELECT payee_discord_id, SUM(amount) as total_earned
+            FROM payments WHERE is_paid = 1
+            GROUP BY payee_discord_id
+        ''')
+        season_earnings = {row[0]: row[1] for row in cursor.fetchall()}
+        
+        # Get season dues paid (losses from payments)
+        cursor.execute('''
+            SELECT payer_discord_id, SUM(amount) as total_paid
+            FROM payments WHERE is_paid = 1
+            GROUP BY payer_discord_id
+        ''')
+        season_dues = {row[0]: row[1] for row in cursor.fetchall()}
+        
         conn.close()
         
-        if not wagers:
-            await interaction.followup.send("📭 No completed wagers yet! Be the first to create one with `/wager`.")
-            return
-        
-        # Calculate stats for each user
+        # Calculate stats for each user (combining wagers + season payouts)
         user_stats = {}
         
+        # Process wagers
         for home_user, away_user, amount, winner in wagers:
-            # Initialize users if not exists
             for user_id in [home_user, away_user]:
                 if user_id not in user_stats:
-                    user_stats[user_id] = {'wins': 0, 'losses': 0, 'won': 0.0, 'lost': 0.0}
+                    user_stats[user_id] = {
+                        'wager_wins': 0, 'wager_losses': 0, 
+                        'wager_won': 0.0, 'wager_lost': 0.0,
+                        'season_earned': 0.0, 'season_paid': 0.0
+                    }
             
-            # Update stats
             loser = away_user if winner == home_user else home_user
-            user_stats[winner]['wins'] += 1
-            user_stats[winner]['won'] += amount
-            user_stats[loser]['losses'] += 1
-            user_stats[loser]['lost'] += amount
+            user_stats[winner]['wager_wins'] += 1
+            user_stats[winner]['wager_won'] += amount
+            user_stats[loser]['wager_losses'] += 1
+            user_stats[loser]['wager_lost'] += amount
         
-        # Sort by net earnings
+        # Add season earnings/dues to user stats
+        all_users = set(list(season_earnings.keys()) + list(season_dues.keys()) + list(user_stats.keys()))
+        for user_id in all_users:
+            if user_id not in user_stats:
+                user_stats[user_id] = {
+                    'wager_wins': 0, 'wager_losses': 0,
+                    'wager_won': 0.0, 'wager_lost': 0.0,
+                    'season_earned': 0.0, 'season_paid': 0.0
+                }
+            user_stats[user_id]['season_earned'] = season_earnings.get(user_id, 0.0)
+            user_stats[user_id]['season_paid'] = season_dues.get(user_id, 0.0)
+        
+        if not user_stats:
+            await interaction.followup.send("📭 No earnings data yet!")
+            return
+        
+        # Calculate total net for each user
+        def calc_net(stats):
+            wager_net = stats['wager_won'] - stats['wager_lost']
+            season_net = stats['season_earned'] - stats['season_paid']
+            return wager_net + season_net
+        
+        # Sort by total net earnings
         sorted_users = sorted(
             user_stats.items(),
-            key=lambda x: x[1]['won'] - x[1]['lost'],
+            key=lambda x: calc_net(x[1]),
             reverse=True
         )
         
         embed = discord.Embed(
-            title="🎰 Wager Leaderboard",
-            description="Top performers in head-to-head wagers",
+            title="💰 Overall Earnings Leaderboard",
+            description="Combined wager + season payout earnings",
             color=discord.Color.gold()
         )
         
@@ -581,36 +619,41 @@ class WagersCog(commands.Cog):
         top_earners = []
         for i, (user_id, stats) in enumerate(sorted_users[:5], 1):
             member = interaction.guild.get_member(user_id)
-            name = member.display_name if member else f"User {user_id}"
-            net = stats['won'] - stats['lost']
+            name = member.display_name if member else f"<@{user_id}>"
+            total_net = calc_net(stats)
+            wager_net = stats['wager_won'] - stats['wager_lost']
+            season_net = stats['season_earned'] - stats['season_paid']
             medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
-            top_earners.append(f"{medal} **{name}**: {stats['wins']}-{stats['losses']} (${net:+.2f})")
+            top_earners.append(f"{medal} **{name}**: **${total_net:+.2f}**\n    Wagers: ${wager_net:+.2f} | Season: ${season_net:+.2f}")
         
         embed.add_field(name="🏆 Top Earners", value="\n".join(top_earners) or "No data", inline=False)
         
         # Biggest losers (bottom of the list)
-        bottom_users = sorted_users[-5:][::-1]
+        bottom_users = [u for u in sorted_users if calc_net(u[1]) < 0]
+        bottom_users = sorted(bottom_users, key=lambda x: calc_net(x[1]))[:5]
         biggest_losers = []
         for i, (user_id, stats) in enumerate(bottom_users, 1):
-            if stats['won'] - stats['lost'] < 0:  # Only show if actually losing
-                member = interaction.guild.get_member(user_id)
-                name = member.display_name if member else f"User {user_id}"
-                net = stats['won'] - stats['lost']
-                biggest_losers.append(f"{i}. **{name}**: {stats['wins']}-{stats['losses']} (${net:+.2f})")
+            member = interaction.guild.get_member(user_id)
+            name = member.display_name if member else f"<@{user_id}>"
+            total_net = calc_net(stats)
+            wager_net = stats['wager_won'] - stats['wager_lost']
+            season_net = stats['season_earned'] - stats['season_paid']
+            biggest_losers.append(f"{i}. **{name}**: **${total_net:+.2f}**\n    Wagers: ${wager_net:+.2f} | Season: ${season_net:+.2f}")
         
         if biggest_losers:
             embed.add_field(name="📉 Biggest Losers", value="\n".join(biggest_losers), inline=False)
         
         # Total stats
         total_wagers = len(wagers)
-        total_money = sum(w[2] for w in wagers)
+        total_wager_money = sum(w[2] for w in wagers)
+        total_season_money = sum(season_earnings.values())
         embed.add_field(
             name="📊 Overall Stats",
-            value=f"Total Wagers: **{total_wagers}**\nTotal Money Wagered: **${total_money:.2f}**",
+            value=f"Total Wagers: **{total_wagers}** (${total_wager_money:.2f})\nSeason Payouts: **${total_season_money:.2f}**",
             inline=False
         )
         
-        embed.set_footer(text="Use /wager to challenge someone!")
+        embed.set_footer(text="Use /wager to challenge someone! | Use /topearners for wager-only stats")
         
         await interaction.followup.send(embed=embed)
     
