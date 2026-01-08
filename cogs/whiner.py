@@ -215,10 +215,10 @@ class WhinerCog(commands.Cog):
         whiner_emojis = ["👶", "😢", "😤", "😠", "🗣️"]
         
         for i, (user_id, count, score) in enumerate(results):
-            member = interaction.guild.get_member(user_id)
-            name = member.display_name if member else f"User {user_id}"
+            # Use Discord mention format to always show the username
+            mention = f"<@{user_id}>"
             emoji = whiner_emojis[i] if i < 5 else "💬"
-            leaderboard += f"{emoji} **{name}**: {count} complaints (Score: {score})\n"
+            leaderboard += f"{emoji} {mention}: {count} complaints (Score: {score})\n"
         
         embed.add_field(name="🏆 Leaderboard", value=leaderboard, inline=False)
         
@@ -240,8 +240,7 @@ class WhinerCog(commands.Cog):
                     truncated = quote[:100] + "..." if len(quote) > 100 else quote
                     quotes_text += f"*\"{truncated}\"*\n"
                 
-                top_whiner = interaction.guild.get_member(top_whiner_id)
-                top_name = top_whiner.display_name if top_whiner else "Top Whiner"
+                top_name = f"<@{top_whiner_id}>"
                 embed.add_field(
                     name=f"📢 Recent from {top_name}",
                     value=quotes_text,

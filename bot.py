@@ -436,6 +436,57 @@ class MistressLIVBot(commands.Bot):
             except Exception as e:
                 logger.error(f"Error auto-registering member: {e}")
     
+    @commands.command(name='commands')
+    async def commands_list(self, ctx):
+        """Post the full command list to the channel."""
+        embed = discord.Embed(
+            title="\ud83d\udccb MISTRESS LIV LEAGUE COMMANDS",
+            color=discord.Color.gold()
+        )
+        
+        # MyMadden Commands
+        mymadden = (
+            "`/register` - Register for the league\n"
+            "`/connectservices` - Link your game accounts\n"
+            "`/players` - View player database\n"
+            "`/sync info` - Sync league info\n"
+            "`/sync stats` - Sync player stats\n"
+            "`/sync rosters` - Sync team rosters"
+        )
+        embed.add_field(name="\ud83c\udfc8 MyMadden", value=mymadden, inline=False)
+        
+        # Info Commands
+        info_cmds = "`/help` - View all commands\n`/serverinfo` - Server details"
+        embed.add_field(name="\u2139\ufe0f Info", value=info_cmds, inline=True)
+        
+        # Payment Commands
+        payment_cmds = (
+            "`/mypayments` - Your payment summary\n"
+            "`/whooowesme` - Who owes YOU money\n"
+            "`/whoiowe` - Who YOU owe money to\n"
+            "`/paymentschedule` - All outstanding payments\n"
+            "`/markpaid` - Mark a debt as paid\n"
+            "`/topearners` - Earnings leaderboard\n"
+            "`/toplosers` - Losses leaderboard"
+        )
+        embed.add_field(name="\ud83d\udcb0 Payments & Dues", value=payment_cmds, inline=False)
+        
+        # Profitability Commands
+        profit_cmds = "`/profitability` - League standings\n`/myprofit` - Your profit breakdown"
+        embed.add_field(name="\ud83d\udcca Profitability", value=profit_cmds, inline=True)
+        
+        # Fun Commands
+        fun_cmds = "`/whiner` - Who complains most\n`/mywhines` - Your complaint stats"
+        embed.add_field(name="\ud83d\ude24 Fun", value=fun_cmds, inline=True)
+        
+        # Admin Commands
+        admin_cmds = "`/announce` `/createpayment` `/clearpayment` `/resetwhiner`"
+        embed.add_field(name="\ud83d\udd27 Admin Only", value=admin_cmds, inline=False)
+        
+        embed.set_footer(text="Use / to access slash commands | !commands to show this list")
+        
+        await ctx.send(embed=embed)
+
     def remove_helmet_from_name(self, name):
         """Remove any helmet emoji prefix from a name."""
         # Remove custom emoji pattern (e.g., <:bufhelmet:123456789>)
