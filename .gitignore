@@ -1,26 +1,10 @@
-# Environment
 .env
-*.env
-
-# Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-venv/
-ENV/
-
-# Logs
-*.log
-nohup.out
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
+*.pyc
+*.pyo
+*.db
+github_token.txt
+discord_token.txt
+mfa_bypass_process.md
 .DS_Store
-Thumbs.db
+data/
