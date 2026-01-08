@@ -1,0 +1,11 @@
+Error from Railway logs for /autoregisterall:
+
+discord.app_commands.errors.CommandInvokeError: Command 'autoregisterall' raised an exception: ClientException: Intents.members must be enabled to use this.
+
+File "/app/cogs/registration.py", line 415, in auto_register_all
+    async for member in guild.fetch_members(limit=None):
+
+File "/opt/venv/lib/python3.12/site-packages/discord/guild.py", line 2503, in fetch_members
+    raise ClientException('Intents.members must be enabled to use this.')
+
+ISSUE: The bot needs the Server Members Intent enabled to use guild.fetch_members()

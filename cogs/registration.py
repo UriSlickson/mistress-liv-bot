@@ -389,8 +389,8 @@ class RegistrationCog(commands.Cog):
     )
     async def auto_register_all(self, interaction: discord.Interaction, sync_helmets: bool = True):
         """
-        Scan all server members and automatically register anyone with a team role.
-        This is useful for bulk-registering existing members.
+        Scan all team roles and register their members.
+        Uses role.members instead of guild.fetch_members to avoid needing Server Members Intent.
         """
         await interaction.response.defer(ephemeral=True)
         
@@ -400,6 +400,7 @@ class RegistrationCog(commands.Cog):
         already_registered = 0
         helmets_synced = 0
         errors = 0
+        no_members = []
         
         try:
             # Get all currently registered users
@@ -411,44 +412,57 @@ class RegistrationCog(commands.Cog):
         except:
             existing_registrations = {}
         
-        # Scan all members
-        async for member in guild.fetch_members(limit=None):
-            # Skip bots
-            if member.bot:
+        # Iterate through each team abbreviation and find matching roles
+        for team_abbrev in NFL_TEAM_ABBREVS:
+            # Find the role with this team name (case-insensitive)
+            team_role = None
+            for role in guild.roles:
+                if role.name.upper() == team_abbrev:
+                    team_role = role
+                    break
+            
+            if not team_role:
+                continue  # No role for this team
+            
+            # Get members with this role (uses cached members, no API call needed)
+            members_with_role = team_role.members
+            
+            if not members_with_role:
+                no_members.append(team_abbrev)
                 continue
             
-            # Check if they have a team role
-            team_abbrev = self.get_user_team_role(member)
-            if not team_abbrev:
-                continue
-            
-            # Check if already registered for this team
-            if team_abbrev in existing_registrations and existing_registrations[team_abbrev] == member.id:
-                already_registered += 1
-                continue
-            
-            # Register them
-            if self.register_team_owner(team_abbrev, member.id):
-                emoji = NFL_TEAM_EMOJIS.get(team_abbrev, '🏈')
-                registered += 1
-                results.append(f"✅ {emoji} {member.display_name} → {team_abbrev}")
+            for member in members_with_role:
+                # Skip bots
+                if member.bot:
+                    continue
                 
-                # Sync helmet if requested
-                if sync_helmets:
-                    try:
-                        base_name = self.remove_helmet_from_name(member.display_name)
-                        new_nickname = f"{emoji} {base_name}"
-                        if len(new_nickname) > 32:
-                            new_nickname = new_nickname[:32]
-                        await member.edit(nick=new_nickname)
-                        helmets_synced += 1
-                    except discord.Forbidden:
-                        pass  # Can't change nickname (maybe server owner)
-                    except Exception as e:
-                        logger.warning(f"Could not sync helmet for {member.display_name}: {e}")
-            else:
-                errors += 1
-                results.append(f"❌ {member.display_name} - Failed to register")
+                # Check if already registered for this team
+                if team_abbrev in existing_registrations and existing_registrations[team_abbrev] == member.id:
+                    already_registered += 1
+                    continue
+                
+                # Register them
+                if self.register_team_owner(team_abbrev, member.id):
+                    emoji = NFL_TEAM_EMOJIS.get(team_abbrev, '🏈')
+                    registered += 1
+                    results.append(f"✅ {emoji} {member.display_name} → {team_abbrev}")
+                    
+                    # Sync helmet if requested
+                    if sync_helmets:
+                        try:
+                            base_name = self.remove_helmet_from_name(member.display_name)
+                            new_nickname = f"{emoji} {base_name}"
+                            if len(new_nickname) > 32:
+                                new_nickname = new_nickname[:32]
+                            await member.edit(nick=new_nickname)
+                            helmets_synced += 1
+                        except discord.Forbidden:
+                            pass  # Can't change nickname (maybe server owner)
+                        except Exception as e:
+                            logger.warning(f"Could not sync helmet for {member.display_name}: {e}")
+                else:
+                    errors += 1
+                    results.append(f"❌ {member.display_name} - Failed to register")
         
         # Build response
         response = ["🔄 **Auto-Registration Complete**\n"]
@@ -460,6 +474,11 @@ class RegistrationCog(commands.Cog):
             response.append(f"❌ **Errors:** {errors}")
         
         response.append(f"\n**Total team owners:** {registered + already_registered}/32")
+        
+        if no_members:
+            response.append(f"\n⚠️ **Teams with no members:** {', '.join(no_members[:10])}")
+            if len(no_members) > 10:
+                response.append(f"   ... and {len(no_members) - 10} more")
         
         if results:
             response.append("\n**New registrations:**")
