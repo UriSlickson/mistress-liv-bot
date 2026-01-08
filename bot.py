@@ -110,6 +110,7 @@ class MistressLIVBot(commands.Bot):
         await self.load_extension('cogs.profitability')
         await self.load_extension('cogs.announcements')
         await self.load_extension('cogs.registration')
+        await self.load_extension('cogs.whiner')
         
         # Sync slash commands
         guild = discord.Object(id=self.guild_id)
