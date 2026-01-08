@@ -502,7 +502,8 @@ class MistressLIVBot(commands.Bot):
             profit_cmds = (
                 "`/profitability` - League standings\n"
                 "`/myprofit` - Your profit breakdown\n"
-                "`/viewseasondata` - View season data"
+                "`/viewpairings` - AFC/NFC seed pairings\n"
+                "`/payoutstructure` - View payout rules"
             )
             embed.add_field(name="\ud83d\udcca Profitability", value=profit_cmds, inline=True)
             
@@ -518,6 +519,8 @@ class MistressLIVBot(commands.Bot):
                 "`/clearpayment` - Clear a payment\n"
                 "`/generatepayments` - Generate dues\n"
                 "`/setseeding` - Set playoff seeding\n"
+                "`/setplayoffwinner` - Record playoff win\n"
+                "`/clearplayoffresults` - Clear playoff data\n"
                 "`/resetwhiner` - Reset whiner stats\n"
                 "`/registerall` - Register all owners\n"
                 "`/setuproles` - Create team roles\n"

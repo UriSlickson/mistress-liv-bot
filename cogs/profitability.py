@@ -2,6 +2,7 @@
 Profitability Cog - Comprehensive payment generation, tracking, and franchise profitability
 Features:
 - Generate season payments based on NFC seeds and playoff results
+- AFC/NFC seed pairing: AFC teams retain 20%, NFC teams get 80% of paired AFC earnings
 - Clear/reset season payments
 - Track franchise profitability (playoff earnings, wagers, dues)
 - Post payment summaries to GM division channels
@@ -25,6 +26,10 @@ PLAYOFF_PAYOUTS = {
     'superbowl': 300,    # Super Bowl Win = $300 (1 payout)
 }
 
+# AFC/NFC Seed Pairing Split
+AFC_RETENTION_RATE = 0.20  # AFC teams keep 20% of their earnings
+NFC_PAIRED_RATE = 0.80     # NFC teams get 80% of their paired AFC team's earnings
+
 # NFC Seeds 8-16 pay into the pot
 # Payment structure: who pays to whom
 NFC_PAYER_STRUCTURE = {
@@ -42,6 +47,12 @@ NFC_PAYER_STRUCTURE = {
     9: {'round': 'superbowl', 'amount': 100},
     10: {'round': 'superbowl', 'amount': 100},
 }
+
+# Team to Conference mapping
+AFC_TEAMS = ['BAL', 'BUF', 'CIN', 'CLE', 'DEN', 'HOU', 'IND', 'JAX', 
+             'KC', 'LAC', 'LV', 'MIA', 'NE', 'NYJ', 'PIT', 'TEN']
+NFC_TEAMS = ['ARI', 'ATL', 'CAR', 'CHI', 'DAL', 'DET', 'GB', 'LAR',
+             'MIN', 'NO', 'NYG', 'PHI', 'SEA', 'SF', 'TB', 'WAS']
 
 # Division channel mapping
 DIVISION_CHANNELS = {
@@ -81,13 +92,14 @@ class ProfitabilityCog(commands.Cog):
                 round TEXT NOT NULL,
                 winner_discord_id INTEGER NOT NULL,
                 winner_team_id TEXT,
+                conference TEXT,
                 loser_discord_id INTEGER,
                 loser_team_id TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
-        # Season standings for NFC seeds
+        # Season standings for NFC/AFC seeds
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS season_standings (
                 standing_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,15 +127,29 @@ class ProfitabilityCog(commands.Cog):
             )
         ''')
         
+        # Add conference column to playoff_results if it doesn't exist
+        try:
+            cursor.execute('ALTER TABLE playoff_results ADD COLUMN conference TEXT')
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        
         conn.commit()
         conn.close()
+    
+    def _get_team_conference(self, team_id: str) -> str:
+        """Get the conference for a team."""
+        if team_id and team_id.upper() in AFC_TEAMS:
+            return 'AFC'
+        elif team_id and team_id.upper() in NFC_TEAMS:
+            return 'NFC'
+        return None
     
     @app_commands.command(name="setseeding", description="[Admin] Set NFC/AFC seeding for a season")
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         season="Season number",
         conference="NFC or AFC",
-        seed="Seed number (1-16)",
+        seed="Seed number (1-16 for NFC, 1-7 for AFC playoffs)",
         user="The user who has this seed"
     )
     async def set_seeding(
@@ -150,10 +176,7 @@ class ProfitabilityCog(commands.Cog):
         # Get user's team
         team_id = None
         for role in user.roles:
-            if role.name.upper() in ['ARI', 'ATL', 'BAL', 'BUF', 'CAR', 'CHI', 'CIN', 'CLE', 
-                                     'DAL', 'DEN', 'DET', 'GB', 'HOU', 'IND', 'JAX', 'KC',
-                                     'LAC', 'LAR', 'LV', 'MIA', 'MIN', 'NE', 'NO', 'NYG',
-                                     'NYJ', 'PHI', 'PIT', 'SEA', 'SF', 'TB', 'TEN', 'WAS']:
+            if role.name.upper() in AFC_TEAMS + NFC_TEAMS:
                 team_id = role.name.upper()
                 break
         
@@ -176,7 +199,8 @@ class ProfitabilityCog(commands.Cog):
     @app_commands.describe(
         season="Season number",
         round="Playoff round (wildcard, divisional, conference, superbowl)",
-        winner="The user who won this round"
+        winner="The user who won this round",
+        conference="Conference (AFC or NFC) - required for proper pairing"
     )
     @app_commands.choices(round=[
         app_commands.Choice(name="Wild Card / Bye", value="wildcard"),
@@ -189,7 +213,8 @@ class ProfitabilityCog(commands.Cog):
         interaction: discord.Interaction,
         season: int,
         round: str,
-        winner: discord.Member
+        winner: discord.Member,
+        conference: Optional[str] = None
     ):
         """Record a playoff round winner."""
         conn = self.get_db_connection()
@@ -198,17 +223,20 @@ class ProfitabilityCog(commands.Cog):
         # Get winner's team
         team_id = None
         for role in winner.roles:
-            if role.name.upper() in ['ARI', 'ATL', 'BAL', 'BUF', 'CAR', 'CHI', 'CIN', 'CLE', 
-                                     'DAL', 'DEN', 'DET', 'GB', 'HOU', 'IND', 'JAX', 'KC',
-                                     'LAC', 'LAR', 'LV', 'MIA', 'MIN', 'NE', 'NO', 'NYG',
-                                     'NYJ', 'PHI', 'PIT', 'SEA', 'SF', 'TB', 'TEN', 'WAS']:
+            if role.name.upper() in AFC_TEAMS + NFC_TEAMS:
                 team_id = role.name.upper()
                 break
         
+        # Auto-detect conference from team if not provided
+        if not conference and team_id:
+            conference = self._get_team_conference(team_id)
+        elif conference:
+            conference = conference.upper()
+        
         cursor.execute('''
-            INSERT INTO playoff_results (season, round, winner_discord_id, winner_team_id)
-            VALUES (?, ?, ?, ?)
-        ''', (season, round, winner.id, team_id))
+            INSERT INTO playoff_results (season, round, winner_discord_id, winner_team_id, conference)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (season, round, winner.id, team_id, conference))
         
         conn.commit()
         conn.close()
@@ -220,53 +248,108 @@ class ProfitabilityCog(commands.Cog):
             'superbowl': 'Super Bowl'
         }
         
+        conf_str = f" ({conference})" if conference else ""
         await interaction.response.send_message(
-            f"✅ Recorded {winner.display_name} as {round_names[round]} winner for Season {season}",
+            f"✅ Recorded {winner.display_name}{conf_str} as {round_names[round]} winner for Season {season}",
             ephemeral=True
         )
+    
+    def _calculate_afc_earnings(self, cursor, season: int) -> Dict[int, Dict]:
+        """
+        Calculate AFC playoff earnings for each AFC seed.
+        Returns dict: {seed: {'user_id': id, 'total_earnings': amount, 'rounds_won': [list]}}
+        """
+        afc_earnings = {}
+        
+        # Get AFC standings
+        cursor.execute('''
+            SELECT seed, user_discord_id, team_id 
+            FROM season_standings 
+            WHERE season = ? AND conference = 'AFC' AND seed <= 7
+            ORDER BY seed
+        ''', (season,))
+        afc_seeds = cursor.fetchall()
+        
+        # Get AFC playoff results
+        cursor.execute('''
+            SELECT round, winner_discord_id, winner_team_id
+            FROM playoff_results
+            WHERE season = ? AND conference = 'AFC'
+        ''', (season,))
+        afc_results = cursor.fetchall()
+        
+        # Initialize AFC earnings by seed
+        for seed, user_id, team_id in afc_seeds:
+            afc_earnings[seed] = {
+                'user_id': user_id,
+                'team_id': team_id,
+                'total_earnings': 0.0,
+                'rounds_won': []
+            }
+        
+        # Calculate earnings for each AFC playoff winner
+        for round_name, winner_id, team_id in afc_results:
+            # Find which seed this winner is
+            for seed, data in afc_earnings.items():
+                if data['user_id'] == winner_id:
+                    payout = PLAYOFF_PAYOUTS.get(round_name, 0)
+                    data['total_earnings'] += payout
+                    data['rounds_won'].append(round_name)
+                    break
+        
+        return afc_earnings
     
     @app_commands.command(name="generatepayments", description="[Admin] Generate all payment obligations for a season")
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(season="Season number to generate payments for")
     async def generate_payments(self, interaction: discord.Interaction, season: int):
-        """Generate all payment obligations based on NFC seeds and playoff results."""
+        """
+        Generate all payment obligations based on:
+        1. NFC seeds 8-16 paying into the pot (existing system)
+        2. AFC/NFC seed pairing (20% to AFC, 80% to NFC from AFC earnings)
+        """
         await interaction.response.defer(thinking=True)
         
         conn = self.get_db_connection()
         cursor = conn.cursor()
+        
+        payments_created = 0
+        errors = []
+        afc_pairing_payments = 0
+        
+        # ============================================
+        # PART 1: Existing NFC Seeds 8-16 Payout System
+        # ============================================
         
         # Get NFC standings (seeds 8-16 are payers)
         cursor.execute('''
             SELECT seed, user_discord_id, team_id 
             FROM season_standings 
             WHERE season = ? AND conference = 'NFC' AND seed >= 8
-            ORDER BY final_seed
+            ORDER BY seed
         ''', (season,))
         nfc_payers = cursor.fetchall()
         
-        # Get playoff winners by round
+        # Get playoff winners by round (NFC only for the pot system)
         cursor.execute('''
             SELECT round, winner_discord_id, winner_team_id
             FROM playoff_results
-            WHERE season = ?
+            WHERE season = ? AND conference = 'NFC'
         ''', (season,))
-        playoff_results = cursor.fetchall()
+        nfc_playoff_results = cursor.fetchall()
         
-        # Organize winners by round
-        winners_by_round = {
+        # Organize NFC winners by round
+        nfc_winners_by_round = {
             'wildcard': [],
             'divisional': [],
             'conference': [],
             'superbowl': []
         }
-        for result in playoff_results:
+        for result in nfc_playoff_results:
             round_name, winner_id, team_id = result
-            winners_by_round[round_name].append({'user_id': winner_id, 'team_id': team_id})
+            nfc_winners_by_round[round_name].append({'user_id': winner_id, 'team_id': team_id})
         
-        # Generate payments
-        payments_created = 0
-        errors = []
-        
+        # Generate NFC pot payments (seeds 8-16 pay to playoff winners)
         for seed, payer_id, payer_team in nfc_payers:
             if payer_id is None:
                 errors.append(f"NFC #{seed} has no user assigned")
@@ -280,10 +363,10 @@ class ProfitabilityCog(commands.Cog):
             total_amount = payment_info['amount']
             
             # Get winners for this round
-            round_winners = winners_by_round.get(target_round, [])
+            round_winners = nfc_winners_by_round.get(target_round, [])
             
             if not round_winners:
-                errors.append(f"No {target_round} winners recorded for Season {season}")
+                errors.append(f"No NFC {target_round} winners recorded for Season {season}")
                 continue
             
             # Split payment among winners
@@ -301,7 +384,61 @@ class ProfitabilityCog(commands.Cog):
                       f"Season {season} - NFC #{seed} to {target_round} winner"))
                 payments_created += 1
         
+        # ============================================
+        # PART 2: AFC/NFC Seed Pairing System
+        # ============================================
+        
+        # Calculate AFC playoff earnings
+        afc_earnings = self._calculate_afc_earnings(cursor, season)
+        
+        # Get NFC standings (seeds 1-7 for pairing)
+        cursor.execute('''
+            SELECT seed, user_discord_id, team_id 
+            FROM season_standings 
+            WHERE season = ? AND conference = 'NFC' AND seed <= 7
+            ORDER BY seed
+        ''', (season,))
+        nfc_playoff_seeds = cursor.fetchall()
+        
+        # Create AFC/NFC pairing payments
+        for nfc_seed, nfc_user_id, nfc_team_id in nfc_playoff_seeds:
+            if nfc_user_id is None:
+                errors.append(f"NFC #{nfc_seed} has no user assigned for pairing")
+                continue
+            
+            # Get paired AFC seed earnings
+            afc_data = afc_earnings.get(nfc_seed)
+            if not afc_data or afc_data['user_id'] is None:
+                errors.append(f"AFC #{nfc_seed} has no user assigned for pairing")
+                continue
+            
+            afc_user_id = afc_data['user_id']
+            afc_total_earnings = afc_data['total_earnings']
+            
+            if afc_total_earnings <= 0:
+                continue  # No earnings to split
+            
+            # Calculate split amounts
+            afc_keeps = afc_total_earnings * AFC_RETENTION_RATE  # AFC keeps 20%
+            nfc_gets = afc_total_earnings * NFC_PAIRED_RATE      # NFC gets 80%
+            
+            # NFC seed pays AFC seed their 20% share
+            if afc_keeps > 0 and nfc_user_id != afc_user_id:
+                rounds_str = ", ".join(afc_data['rounds_won'])
+                cursor.execute('''
+                    INSERT INTO payments (season_year, payer_discord_id, payee_discord_id, amount, reason, is_paid)
+                    VALUES (?, ?, ?, ?, ?, 0)
+                ''', (season, nfc_user_id, afc_user_id, afc_keeps,
+                      f"Season {season} - NFC #{nfc_seed} pays AFC #{nfc_seed} (20% of AFC earnings: {rounds_str})"))
+                afc_pairing_payments += 1
+                payments_created += 1
+            
+            # Record NFC's 80% earnings (this is implicit - they keep what they don't pay out)
+            # We can track this in profitability calculations
+        
+        # ============================================
         # Update profitability records
+        # ============================================
         self._update_profitability(cursor, season)
         
         conn.commit()
@@ -316,9 +453,33 @@ class ProfitabilityCog(commands.Cog):
         
         embed.add_field(
             name="📊 Summary",
-            value=f"**Payments Created:** {payments_created}\n**Errors:** {len(errors)}",
+            value=(
+                f"**Total Payments Created:** {payments_created}\n"
+                f"**NFC Pot Payments:** {payments_created - afc_pairing_payments}\n"
+                f"**AFC/NFC Pairing Payments:** {afc_pairing_payments}\n"
+                f"**Errors:** {len(errors)}"
+            ),
             inline=False
         )
+        
+        # Show AFC earnings breakdown
+        if afc_earnings:
+            afc_summary = []
+            for seed, data in sorted(afc_earnings.items()):
+                if data['total_earnings'] > 0:
+                    afc_20 = data['total_earnings'] * AFC_RETENTION_RATE
+                    nfc_80 = data['total_earnings'] * NFC_PAIRED_RATE
+                    afc_summary.append(
+                        f"**Seed #{seed}:** ${data['total_earnings']:.0f} → "
+                        f"AFC gets ${afc_20:.0f}, NFC gets ${nfc_80:.0f}"
+                    )
+            
+            if afc_summary:
+                embed.add_field(
+                    name="🏈 AFC/NFC Seed Pairing Breakdown",
+                    value="\n".join(afc_summary) or "No AFC playoff earnings",
+                    inline=False
+                )
         
         if errors:
             embed.add_field(
@@ -331,6 +492,106 @@ class ProfitabilityCog(commands.Cog):
             name="📋 Next Steps",
             value="Use `/postpayments` to send payment notifications to GM channels\nUse `/dues` to view the full dues tracker",
             inline=False
+        )
+        
+        await interaction.followup.send(embed=embed)
+    
+    @app_commands.command(name="viewpairings", description="View AFC/NFC seed pairings and potential earnings")
+    @app_commands.describe(season="Season number to view pairings for")
+    async def view_pairings(self, interaction: discord.Interaction, season: int):
+        """View the AFC/NFC seed pairings and their earnings breakdown."""
+        await interaction.response.defer()
+        
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get AFC standings
+        cursor.execute('''
+            SELECT seed, user_discord_id, team_id 
+            FROM season_standings 
+            WHERE season = ? AND conference = 'AFC' AND seed <= 7
+            ORDER BY seed
+        ''', (season,))
+        afc_seeds = {row[0]: {'user_id': row[1], 'team_id': row[2]} for row in cursor.fetchall()}
+        
+        # Get NFC standings
+        cursor.execute('''
+            SELECT seed, user_discord_id, team_id 
+            FROM season_standings 
+            WHERE season = ? AND conference = 'NFC' AND seed <= 7
+            ORDER BY seed
+        ''', (season,))
+        nfc_seeds = {row[0]: {'user_id': row[1], 'team_id': row[2]} for row in cursor.fetchall()}
+        
+        # Calculate AFC earnings
+        afc_earnings = self._calculate_afc_earnings(cursor, season)
+        
+        conn.close()
+        
+        embed = discord.Embed(
+            title=f"🔗 Season {season} AFC/NFC Seed Pairings",
+            description=(
+                "**Payout Split:** AFC keeps 20%, NFC gets 80% of AFC earnings\n"
+                "NFC seed owner pays their paired AFC seed owner 20% of AFC's playoff earnings"
+            ),
+            color=discord.Color.blue(),
+            timestamp=datetime.utcnow()
+        )
+        
+        pairings = []
+        for seed in range(1, 8):
+            afc_data = afc_seeds.get(seed, {})
+            nfc_data = nfc_seeds.get(seed, {})
+            afc_earn = afc_earnings.get(seed, {})
+            
+            afc_user = interaction.guild.get_member(afc_data.get('user_id'))
+            nfc_user = interaction.guild.get_member(nfc_data.get('user_id'))
+            
+            afc_name = afc_user.display_name if afc_user else "Not Set"
+            nfc_name = nfc_user.display_name if nfc_user else "Not Set"
+            afc_team = afc_data.get('team_id', '???')
+            nfc_team = nfc_data.get('team_id', '???')
+            
+            total_afc_earnings = afc_earn.get('total_earnings', 0)
+            afc_keeps = total_afc_earnings * AFC_RETENTION_RATE
+            nfc_gets = total_afc_earnings * NFC_PAIRED_RATE
+            
+            if total_afc_earnings > 0:
+                earnings_str = f" → AFC: ${afc_keeps:.0f} | NFC: ${nfc_gets:.0f}"
+            else:
+                earnings_str = ""
+            
+            pairings.append(
+                f"**#{seed}:** {afc_team} ({afc_name}) ↔ {nfc_team} ({nfc_name}){earnings_str}"
+            )
+        
+        embed.add_field(
+            name="Seed Pairings (AFC ↔ NFC)",
+            value="\n".join(pairings),
+            inline=False
+        )
+        
+        # Payout reference
+        embed.add_field(
+            name="💵 Playoff Payout Values",
+            value=(
+                f"**Wild Card/Bye:** ${PLAYOFF_PAYOUTS['wildcard']}\n"
+                f"**Divisional:** ${PLAYOFF_PAYOUTS['divisional']}\n"
+                f"**Conference:** ${PLAYOFF_PAYOUTS['conference']}\n"
+                f"**Super Bowl:** ${PLAYOFF_PAYOUTS['superbowl']}"
+            ),
+            inline=True
+        )
+        
+        embed.add_field(
+            name="📊 Split Example",
+            value=(
+                "If AFC #3 wins Divisional ($100):\n"
+                "• AFC #3 owner gets: $20 (20%)\n"
+                "• NFC #3 owner keeps: $80 (80%)\n"
+                "• NFC #3 pays AFC #3 the $20"
+            ),
+            inline=True
         )
         
         await interaction.followup.send(embed=embed)
@@ -401,133 +662,155 @@ class ProfitabilityCog(commands.Cog):
         conn = self.get_db_connection()
         cursor = conn.cursor()
         
-        # Count payments to be deleted
-        cursor.execute('SELECT COUNT(*) FROM payments WHERE season_year = ?', (season,))
-        count = cursor.fetchone()[0]
-        
-        # Delete payments
         cursor.execute('DELETE FROM payments WHERE season_year = ?', (season,))
+        deleted = cursor.rowcount
         
-        # Clear profitability records for this season
         cursor.execute('DELETE FROM franchise_profitability WHERE season = ?', (season,))
-        
-        # Clear playoff results
-        cursor.execute('DELETE FROM playoff_results WHERE season = ?', (season,))
-        
-        # Clear standings
-        cursor.execute('DELETE FROM season_standings WHERE season = ?', (season,))
         
         conn.commit()
         conn.close()
         
-        embed = discord.Embed(
-            title=f"🗑️ Season {season} Data Cleared",
-            description=f"Deleted **{count}** payment records and all associated season data.",
-            color=discord.Color.red(),
-            timestamp=datetime.utcnow()
+        await interaction.response.send_message(
+            f"✅ Cleared {deleted} payment records for Season {season}",
+            ephemeral=True
         )
+    
+    @app_commands.command(name="clearplayoffresults", description="[Admin] Clear playoff results for a season")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        season="Season number to clear playoff results for",
+        confirm="Type 'CONFIRM' to proceed"
+    )
+    async def clear_playoff_results(self, interaction: discord.Interaction, season: int, confirm: str):
+        """Clear all playoff result records for a season."""
+        if confirm != "CONFIRM":
+            await interaction.response.send_message(
+                "⚠️ To clear playoff results, you must type `CONFIRM` in the confirm field.\n"
+                "This action cannot be undone!",
+                ephemeral=True
+            )
+            return
         
-        await interaction.response.send_message(embed=embed)
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('DELETE FROM playoff_results WHERE season = ?', (season,))
+        deleted = cursor.rowcount
+        
+        conn.commit()
+        conn.close()
+        
+        await interaction.response.send_message(
+            f"✅ Cleared {deleted} playoff result records for Season {season}",
+            ephemeral=True
+        )
     
     @app_commands.command(name="postpayments", description="[Admin] Post payment summaries to GM division channels")
     @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(season="Season number")
+    @app_commands.describe(season="Season number to post payments for")
     async def post_payments(self, interaction: discord.Interaction, season: int):
-        """Post payment summaries to each GM division channel."""
+        """Post payment summaries to each GM's division channel."""
         await interaction.response.defer(thinking=True)
         
         conn = self.get_db_connection()
         cursor = conn.cursor()
         
-        # Get all unpaid payments for the season
+        # Get all payments for this season
         cursor.execute('''
-            SELECT p.payer_discord_id, p.payee_discord_id, p.amount, p.reason,
-                   t.division
-            FROM payments p
-            LEFT JOIN teams t ON t.user_discord_id = p.payer_discord_id
-            WHERE p.season_year = ? AND p.is_paid = 0
-            ORDER BY t.division, p.amount DESC
+            SELECT payer_discord_id, payee_discord_id, amount, reason, is_paid
+            FROM payments
+            WHERE season_year = ?
+            ORDER BY payer_discord_id
         ''', (season,))
         payments = cursor.fetchall()
+        
         conn.close()
         
         if not payments:
-            await interaction.followup.send(f"No unpaid payments found for Season {season}")
+            await interaction.followup.send(f"No payments found for Season {season}")
             return
         
-        # Group payments by division
-        payments_by_division = {}
-        for payer_id, payee_id, amount, reason, division in payments:
-            if division not in payments_by_division:
-                payments_by_division[division] = []
-            payments_by_division[division].append({
-                'payer_id': payer_id,
+        # Group payments by payer
+        payer_payments = {}
+        for payer_id, payee_id, amount, reason, is_paid in payments:
+            if payer_id not in payer_payments:
+                payer_payments[payer_id] = []
+            payer_payments[payer_id].append({
                 'payee_id': payee_id,
                 'amount': amount,
-                'reason': reason
+                'reason': reason,
+                'is_paid': is_paid
             })
         
-        # Post to each division channel
         channels_posted = 0
-        for division, div_payments in payments_by_division.items():
-            if division is None:
-                continue
-                
-            # Find the channel
-            channel_name = DIVISION_CHANNELS.get(division)
-            if not channel_name:
-                continue
-                
-            channel = discord.utils.get(interaction.guild.text_channels, name=channel_name)
-            if not channel:
+        
+        for payer_id, payment_list in payer_payments.items():
+            member = interaction.guild.get_member(payer_id)
+            if not member:
                 continue
             
-            # Build embed for this division
+            # Find the user's division channel
+            division_channel = None
+            for role in member.roles:
+                for div_name, channel_name in DIVISION_CHANNELS.items():
+                    if div_name.lower().replace(' ', '-') in role.name.lower().replace(' ', '-'):
+                        division_channel = discord.utils.get(interaction.guild.text_channels, name=channel_name)
+                        break
+                if division_channel:
+                    break
+            
+            if not division_channel:
+                continue
+            
+            # Build payment summary embed
+            total_owed = sum(p['amount'] for p in payment_list if not p['is_paid'])
+            
             embed = discord.Embed(
-                title=f"💰 Season {season} Payment Summary - {division}",
-                color=discord.Color.gold(),
+                title=f"💰 Season {season} Payment Summary",
+                description=f"**{member.display_name}** owes the following:",
+                color=discord.Color.orange() if total_owed > 0 else discord.Color.green(),
                 timestamp=datetime.utcnow()
             )
             
-            total_owed = sum(p['amount'] for p in div_payments)
+            payment_lines = []
+            for p in payment_list:
+                payee = interaction.guild.get_member(p['payee_id'])
+                payee_name = payee.display_name if payee else f"User {p['payee_id']}"
+                status = "✅" if p['is_paid'] else "⏳"
+                payment_lines.append(f"{status} ${p['amount']:.2f} to **{payee_name}**")
+            
             embed.add_field(
-                name="📊 Division Total",
-                value=f"**${total_owed:.2f}** outstanding",
+                name="Payments",
+                value="\n".join(payment_lines[:10]) + ("\n*...and more*" if len(payment_lines) > 10 else ""),
                 inline=False
             )
             
-            # List individual payments
-            payment_lines = []
-            for p in div_payments[:10]:
-                payer = interaction.guild.get_member(p['payer_id'])
-                payee = interaction.guild.get_member(p['payee_id'])
-                payer_name = payer.display_name if payer else "Unknown"
-                payee_name = payee.display_name if payee else "Unknown"
-                payment_lines.append(f"• {payer_name} → {payee_name}: **${p['amount']:.2f}**")
+            embed.add_field(
+                name="Total Outstanding",
+                value=f"**${total_owed:.2f}**",
+                inline=True
+            )
             
-            if payment_lines:
-                embed.add_field(
-                    name="💳 Payments Due",
-                    value="\n".join(payment_lines),
-                    inline=False
-                )
+            embed.set_footer(text="Use /markpaid to record payments")
             
-            embed.set_footer(text="Use /markpaid to record payments | /mypayments to view your status")
-            
-            await channel.send(embed=embed)
-            channels_posted += 1
+            try:
+                await division_channel.send(embed=embed)
+                channels_posted += 1
+            except discord.Forbidden:
+                pass
         
-        await interaction.followup.send(f"✅ Posted payment summaries to {channels_posted} division channels")
+        await interaction.followup.send(
+            f"✅ Posted payment summaries to {channels_posted} division channels"
+        )
     
-    @app_commands.command(name="profitability", description="View franchise profitability rankings")
-    @app_commands.describe(season="Season number (leave empty for all-time)")
-    async def view_profitability(self, interaction: discord.Interaction, season: Optional[int] = None):
-        """Display franchise profitability leaderboard."""
+    @app_commands.command(name="profitability", description="View league-wide profitability rankings")
+    @app_commands.describe(season="Season to view (optional, shows all-time if not specified)")
+    async def profitability(self, interaction: discord.Interaction, season: Optional[int] = None):
+        """Show profitability leaderboard."""
         conn = self.get_db_connection()
         cursor = conn.cursor()
         
         if season:
-            # Single season profitability
             cursor.execute('''
                 SELECT user_discord_id, playoff_earnings, dues_paid, wager_profit, net_profit
                 FROM franchise_profitability
@@ -536,7 +819,6 @@ class ProfitabilityCog(commands.Cog):
             ''', (season,))
             title = f"💰 Season {season} Profitability"
         else:
-            # All-time profitability
             cursor.execute('''
                 SELECT user_discord_id, 
                        SUM(playoff_earnings) as total_earnings,
@@ -547,7 +829,7 @@ class ProfitabilityCog(commands.Cog):
                 GROUP BY user_discord_id
                 ORDER BY total_profit DESC
             ''')
-            title = "💰 All-Time Franchise Profitability"
+            title = "💰 All-Time Profitability"
         
         results = cursor.fetchall()
         conn.close()
@@ -561,13 +843,11 @@ class ProfitabilityCog(commands.Cog):
         if not results:
             embed.description = "*No profitability data recorded yet.*"
         else:
-            # Top earners
             top_lines = []
             for i, (user_id, earnings, dues, wagers, net) in enumerate(results[:10], 1):
                 member = interaction.guild.get_member(user_id)
                 name = member.display_name if member else f"User {user_id}"
                 
-                # Emoji for rank
                 if i == 1:
                     rank_emoji = "🥇"
                 elif i == 2:
@@ -577,19 +857,17 @@ class ProfitabilityCog(commands.Cog):
                 else:
                     rank_emoji = f"{i}."
                 
-                # Color code profit/loss
                 profit_str = f"+${net:.2f}" if net >= 0 else f"-${abs(net):.2f}"
                 top_lines.append(f"{rank_emoji} **{name}**: {profit_str}")
             
             embed.add_field(
-                name="🏆 Rankings",
+                name="🏆 Top Earners",
                 value="\n".join(top_lines),
                 inline=False
             )
             
-            # Summary stats
-            total_pot = sum(r[2] for r in results)  # Total dues collected
-            total_earnings = sum(r[1] for r in results)  # Total earnings distributed
+            total_pot = sum(r[2] for r in results)
+            total_earnings = sum(r[1] for r in results)
             
             embed.add_field(
                 name="📊 League Summary",
@@ -599,13 +877,12 @@ class ProfitabilityCog(commands.Cog):
         
         await interaction.response.send_message(embed=embed)
     
-    @app_commands.command(name="myprofit", description="View your personal profitability breakdown")
+    @app_commands.command(name="myprofit", description="View your personal franchise profitability")
     async def my_profit(self, interaction: discord.Interaction):
-        """Show user's personal profitability breakdown."""
+        """Show the user's personal profitability breakdown."""
         conn = self.get_db_connection()
         cursor = conn.cursor()
         
-        # Get all seasons for this user
         cursor.execute('''
             SELECT season, playoff_earnings, dues_paid, wager_profit, net_profit
             FROM franchise_profitability
@@ -614,7 +891,6 @@ class ProfitabilityCog(commands.Cog):
         ''', (interaction.user.id,))
         results = cursor.fetchall()
         
-        # Get totals
         cursor.execute('''
             SELECT 
                 SUM(playoff_earnings) as total_earnings,
@@ -625,6 +901,7 @@ class ProfitabilityCog(commands.Cog):
             WHERE user_discord_id = ?
         ''', (interaction.user.id,))
         totals = cursor.fetchone()
+        
         conn.close()
         
         embed = discord.Embed(
@@ -638,7 +915,6 @@ class ProfitabilityCog(commands.Cog):
         else:
             total_earnings, total_dues, total_wagers, total_profit = totals
             
-            # All-time summary
             profit_color = "🟢" if total_profit >= 0 else "🔴"
             embed.add_field(
                 name="📊 All-Time Summary",
@@ -651,7 +927,6 @@ class ProfitabilityCog(commands.Cog):
                 inline=False
             )
             
-            # Season breakdown
             if results:
                 season_lines = []
                 for season, earnings, dues, wagers, net in results[:5]:
@@ -664,491 +939,72 @@ class ProfitabilityCog(commands.Cog):
                     inline=False
                 )
         
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-    
-    @app_commands.command(name="viewseasondata", description="View all data for a specific season")
-    @app_commands.describe(season="Season number to view")
-    async def view_season_data(self, interaction: discord.Interaction, season: int):
-        """Display comprehensive season data including standings, playoffs, and payments."""
-        conn = self.get_db_connection()
-        cursor = conn.cursor()
-        
-        # Get NFC standings
-        cursor.execute('''
-            SELECT seed, user_discord_id, team_id
-            FROM season_standings
-            WHERE season = ? AND conference = 'NFC'
-            ORDER BY final_seed
-        ''', (season,))
-        nfc_standings = cursor.fetchall()
-        
-        # Get AFC standings
-        cursor.execute('''
-            SELECT seed, user_discord_id, team_id
-            FROM season_standings
-            WHERE season = ? AND conference = 'AFC'
-            ORDER BY final_seed
-        ''', (season,))
-        afc_standings = cursor.fetchall()
-        
-        # Get playoff results
-        cursor.execute('''
-            SELECT round, winner_discord_id, winner_team_id
-            FROM playoff_results
-            WHERE season = ?
-            ORDER BY 
-                CASE round 
-                    WHEN 'wildcard' THEN 1 
-                    WHEN 'divisional' THEN 2 
-                    WHEN 'conference' THEN 3 
-                    WHEN 'superbowl' THEN 4 
-                END
-        ''', (season,))
-        playoff_results = cursor.fetchall()
-        
-        # Get payment summary
-        cursor.execute('''
-            SELECT COUNT(*), SUM(amount), SUM(CASE WHEN is_paid = 1 THEN amount ELSE 0 END)
-            FROM payments
-            WHERE season_year = ?
-        ''', (season,))
-        payment_summary = cursor.fetchone()
-        conn.close()
-        
-        embed = discord.Embed(
-            title=f"📊 Season {season} Overview",
-            color=discord.Color.blue(),
-            timestamp=datetime.utcnow()
-        )
-        
-        # NFC Standings (seeds 8-16 are payers)
-        if nfc_standings:
-            nfc_lines = []
-            for seed, user_id, team_id in nfc_standings:
-                member = interaction.guild.get_member(user_id) if user_id else None
-                name = member.display_name if member else "CPU/Unassigned"
-                payer_mark = " 💵" if seed >= 8 else ""
-                nfc_lines.append(f"#{seed}: {name} ({team_id or 'N/A'}){payer_mark}")
-            embed.add_field(
-                name="🏈 NFC Standings",
-                value="\n".join(nfc_lines[:8]) or "Not set",
-                inline=True
-            )
-        
-        # Playoff Results
-        if playoff_results:
-            round_names = {
-                'wildcard': 'WC/Bye',
-                'divisional': 'Divisional',
-                'conference': 'Conference',
-                'superbowl': 'Super Bowl'
-            }
-            playoff_lines = []
-            for round_name, winner_id, team_id in playoff_results:
-                member = interaction.guild.get_member(winner_id) if winner_id else None
-                name = member.display_name if member else "Unknown"
-                playoff_lines.append(f"**{round_names.get(round_name, round_name)}:** {name}")
-            embed.add_field(
-                name="🏆 Playoff Winners",
-                value="\n".join(playoff_lines) or "Not recorded",
-                inline=True
-            )
-        
-        # Payment Summary
-        if payment_summary and payment_summary[0]:
-            total_payments, total_amount, paid_amount = payment_summary
-            paid_amount = paid_amount or 0
-            embed.add_field(
-                name="💰 Payment Status",
-                value=(
-                    f"**Total Payments:** {total_payments}\n"
-                    f"**Total Amount:** ${total_amount:.2f}\n"
-                    f"**Paid:** ${paid_amount:.2f}\n"
-                    f"**Outstanding:** ${(total_amount - paid_amount):.2f}"
-                ),
-                inline=False
-            )
-        else:
-            embed.add_field(
-                name="💰 Payment Status",
-                value="No payments generated yet",
-                inline=False
-            )
-        
         await interaction.response.send_message(embed=embed)
-
-
-    @app_commands.command(name="autopopulate", description="[Admin] Auto-populate season data from MyMadden")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(
-        season="Season year from MyMadden (e.g., 2025)",
-        mymadden_season="The MyMadden season year to pull data from"
-    )
-    async def auto_populate(self, interaction: discord.Interaction, season: int, mymadden_season: int):
-        """
-        Auto-populate season standings and playoff results from MyMadden.
-        Matches team roles in Discord to determine who owes what.
-        """
-        await interaction.response.defer(thinking=True)
-        
-        try:
-            # Import the scraper
-            import sys
-            sys.path.insert(0, '/home/ubuntu/mistress_liv_bot')
-            from mymadden_scraper import MyMaddenScraper, get_standings, get_playoff_results
-            
-            scraper = MyMaddenScraper()
-            
-            # Get standings from MyMadden
-            standings = get_standings(mymadden_season)
-            
-            # Get playoff results from MyMadden
-            playoff_winners = scraper.get_playoff_winners(mymadden_season)
-            
-            conn = self.get_db_connection()
-            cursor = conn.cursor()
-            
-            # Build team to Discord user mapping from roles
-            team_to_user = {}
-            for member in interaction.guild.members:
-                for role in member.roles:
-                    role_upper = role.name.upper()
-                    if role_upper in ['ARI', 'ATL', 'BAL', 'BUF', 'CAR', 'CHI', 'CIN', 'CLE', 
-                                     'DAL', 'DEN', 'DET', 'GB', 'HOU', 'IND', 'JAX', 'KC',
-                                     'LAC', 'LAR', 'LV', 'MIA', 'MIN', 'NE', 'NO', 'NYG',
-                                     'NYJ', 'PHI', 'PIT', 'SEA', 'SF', 'TB', 'TEN', 'WAS']:
-                        team_to_user[role_upper] = member.id
-            
-            standings_added = 0
-            playoff_added = 0
-            errors = []
-            
-            # Process NFC standings
-            nfc_standings = standings.get('NFC', [])
-            for standing in nfc_standings:
-                team_abbrev = standing.team_abbrev
-                user_id = team_to_user.get(team_abbrev)
-                
-                if not user_id and standing.seed >= 8:
-                    errors.append(f"NFC #{standing.seed} ({team_abbrev}) - No Discord user with team role")
-                
-                try:
-                    cursor.execute('''
-                        INSERT OR REPLACE INTO season_standings 
-                        (season, conference, seed, team_id, user_discord_id, wins, losses)
-                        VALUES (?, 'NFC', ?, ?, ?, ?, ?)
-                    ''', (season, standing.seed, team_abbrev, user_id, standing.wins, standing.losses))
-                    standings_added += 1
-                except Exception as e:
-                    errors.append(f"Error adding NFC #{standing.seed}: {str(e)}")
-            
-            # Process AFC standings
-            afc_standings = standings.get('AFC', [])
-            for standing in afc_standings:
-                team_abbrev = standing.team_abbrev
-                user_id = team_to_user.get(team_abbrev)
-                
-                try:
-                    cursor.execute('''
-                        INSERT OR REPLACE INTO season_standings 
-                        (season, conference, seed, team_id, user_discord_id, wins, losses)
-                        VALUES (?, 'AFC', ?, ?, ?, ?, ?)
-                    ''', (season, standing.seed, team_abbrev, user_id, standing.wins, standing.losses))
-                    standings_added += 1
-                except Exception as e:
-                    errors.append(f"Error adding AFC #{standing.seed}: {str(e)}")
-            
-            # Process playoff winners
-            for round_name, winners in playoff_winners.items():
-                for winner_team in winners:
-                    user_id = team_to_user.get(winner_team)
-                    
-                    if not user_id:
-                        errors.append(f"{round_name} winner ({winner_team}) - No Discord user with team role")
-                        continue
-                    
-                    try:
-                        cursor.execute('''
-                            INSERT INTO playoff_results (season, round, winner_discord_id, winner_team_id)
-                            VALUES (?, ?, ?, ?)
-                        ''', (season, round_name, user_id, winner_team))
-                        playoff_added += 1
-                    except Exception as e:
-                        errors.append(f"Error adding {round_name} winner: {str(e)}")
-            
-            conn.commit()
-            conn.close()
-            
-            # Build response embed
-            embed = discord.Embed(
-                title=f"📥 Season {season} Data Imported from MyMadden",
-                color=discord.Color.green() if not errors else discord.Color.orange(),
-                timestamp=datetime.utcnow()
-            )
-            
-            embed.add_field(
-                name="📊 Import Summary",
-                value=(
-                    f"**Standings Added:** {standings_added}\n"
-                    f"**Playoff Winners Added:** {playoff_added}\n"
-                    f"**Errors/Warnings:** {len(errors)}"
-                ),
-                inline=False
-            )
-            
-            # Show NFC payers (seeds 8-16)
-            payer_lines = []
-            for standing in nfc_standings:
-                if standing.seed >= 8 and standing.seed <= 16:
-                    user_id = team_to_user.get(standing.team_abbrev)
-                    if user_id:
-                        member = interaction.guild.get_member(user_id)
-                        name = member.display_name if member else "Unknown"
-                    else:
-                        name = "⚠️ No user assigned"
-                    payer_lines.append(f"#{standing.seed}: {standing.team_abbrev} - {name}")
-            
-            if payer_lines:
-                embed.add_field(
-                    name="💵 NFC Payers (Seeds 8-16)",
-                    value="\n".join(payer_lines),
-                    inline=False
-                )
-            
-            if errors:
-                embed.add_field(
-                    name="⚠️ Issues",
-                    value="\n".join(errors[:5]) + ("\n*...and more*" if len(errors) > 5 else ""),
-                    inline=False
-                )
-            
-            embed.add_field(
-                name="📋 Next Steps",
-                value=(
-                    "1. Review the imported data with `/viewseasondata`\n"
-                    "2. Fix any missing team role assignments\n"
-                    "3. Run `/generatepayments` to create payment obligations\n"
-                    "4. Run `/postpayments` to notify members"
-                ),
-                inline=False
-            )
-            
-            await interaction.followup.send(embed=embed)
-            
-        except Exception as e:
-            logger.error(f"Error in auto_populate: {e}")
-            await interaction.followup.send(
-                f"❌ Error importing data from MyMadden: {str(e)}\n\n"
-                "Make sure the MyMadden scraper is properly configured and the season year is correct.",
-                ephemeral=True
-            )
     
-    @app_commands.command(name="showpayers", description="Show who owes money based on NFC seeds 8-16")
-    @app_commands.describe(season="Season number to check")
-    async def show_payers(self, interaction: discord.Interaction, season: int):
-        """Display who owes money based on NFC seeding."""
-        conn = self.get_db_connection()
-        cursor = conn.cursor()
-        
-        # Get NFC seeds 8-16
-        cursor.execute('''
-            SELECT seed, user_discord_id, team_id, wins, losses
-            FROM season_standings
-            WHERE season = ? AND conference = 'NFC' AND seed >= 8 AND seed <= 16
-            ORDER BY final_seed
-        ''', (season,))
-        payers = cursor.fetchall()
-        
-        # Get playoff winners to show who they pay
-        cursor.execute('''
-            SELECT round, winner_discord_id, winner_team_id
-            FROM playoff_results
-            WHERE season = ?
-        ''', (season,))
-        winners = cursor.fetchall()
-        conn.close()
-        
-        # Organize winners by round
-        winners_by_round = {}
-        for round_name, winner_id, team_id in winners:
-            if round_name not in winners_by_round:
-                winners_by_round[round_name] = []
-            member = interaction.guild.get_member(winner_id) if winner_id else None
-            winners_by_round[round_name].append(member.display_name if member else team_id or "Unknown")
-        
+    @app_commands.command(name="payoutstructure", description="View the complete payout structure")
+    async def payout_structure(self, interaction: discord.Interaction):
+        """Display the complete payout structure including AFC/NFC pairing."""
         embed = discord.Embed(
-            title=f"💵 Season {season} - Who Owes What",
-            description="Based on NFC final standings (seeds 8-16 pay into the pot)",
+            title="💰 Season Payout Structure",
+            description="Complete breakdown of how season earnings work",
             color=discord.Color.gold(),
             timestamp=datetime.utcnow()
         )
         
-        if not payers:
-            embed.add_field(
-                name="⚠️ No Data",
-                value="No NFC standings data found for this season.\nUse `/autopopulate` or `/setseeding` to add data.",
-                inline=False
-            )
-        else:
-            # Group by payment target
-            sb_payers = []  # Seeds 8-10 pay SB winner
-            conf_payers = []  # Seeds 11-12 pay Conference winner
-            div_payers = []  # Seeds 13-14 pay Divisional winners
-            wc_payers = []  # Seeds 15-16 pay WC/Bye winners
-            
-            for seed, user_id, team_id, wins, losses in payers:
-                member = interaction.guild.get_member(user_id) if user_id else None
-                name = member.display_name if member else f"⚠️ {team_id or 'Unassigned'}"
-                record = f"({wins}-{losses})" if wins or losses else ""
-                entry = f"#{seed} {name} {record}"
-                
-                if seed in [8, 9, 10]:
-                    sb_payers.append(entry)
-                elif seed in [11, 12]:
-                    conf_payers.append(entry)
-                elif seed in [13, 14]:
-                    div_payers.append(entry)
-                elif seed in [15, 16]:
-                    wc_payers.append(entry)
-            
-            # Super Bowl payers
-            sb_winners = winners_by_round.get('superbowl', ['Not recorded'])
-            embed.add_field(
-                name=f"🏆 Pay Super Bowl Winner ($100 each)",
-                value=f"**Winners:** {', '.join(sb_winners)}\n**Payers:** " + "\n".join(sb_payers),
-                inline=False
-            )
-            
-            # Conference payers
-            conf_winners = winners_by_round.get('conference', ['Not recorded'])
-            embed.add_field(
-                name=f"🏈 Pay Conference Winner ($100 each)",
-                value=f"**Winners:** {', '.join(conf_winners)}\n**Payers:** " + "\n".join(conf_payers),
-                inline=False
-            )
-            
-            # Divisional payers
-            div_winners = winners_by_round.get('divisional', ['Not recorded'])
-            embed.add_field(
-                name=f"📋 Pay Divisional Winners ($100 each)",
-                value=f"**Winners:** {', '.join(div_winners)}\n**Payers:** " + "\n".join(div_payers),
-                inline=False
-            )
-            
-            # WC/Bye payers
-            wc_winners = winners_by_round.get('wildcard', ['Not recorded'])
-            embed.add_field(
-                name=f"🎯 Pay WC/Bye Winners ($100 split)",
-                value=f"**Winners:** {', '.join(wc_winners)}\n**Payers:** " + "\n".join(wc_payers),
-                inline=False
-            )
+        # Playoff payouts
+        embed.add_field(
+            name="🏆 Playoff Round Payouts",
+            value=(
+                f"**Wild Card/Bye Win:** ${PLAYOFF_PAYOUTS['wildcard']}\n"
+                f"**Divisional Win:** ${PLAYOFF_PAYOUTS['divisional']}\n"
+                f"**Conference Championship:** ${PLAYOFF_PAYOUTS['conference']}\n"
+                f"**Super Bowl Win:** ${PLAYOFF_PAYOUTS['superbowl']}\n"
+                f"*Total Possible:* ${sum(PLAYOFF_PAYOUTS.values())}"
+            ),
+            inline=False
+        )
+        
+        # NFC Pot System
+        nfc_pot_lines = []
+        for seed in sorted(NFC_PAYER_STRUCTURE.keys()):
+            info = NFC_PAYER_STRUCTURE[seed]
+            nfc_pot_lines.append(f"NFC #{seed}: ${info['amount']} → {info['round'].title()} Winners")
+        
+        embed.add_field(
+            name="📤 NFC Seeds 8-16 Pay Into Pot",
+            value="\n".join(nfc_pot_lines),
+            inline=False
+        )
+        
+        # AFC/NFC Pairing
+        embed.add_field(
+            name="🔗 AFC/NFC Seed Pairing (Seeds 1-7)",
+            value=(
+                "Each NFC playoff seed is paired with the same AFC seed.\n\n"
+                f"**AFC Team Earnings Split:**\n"
+                f"• AFC owner keeps: **{int(AFC_RETENTION_RATE*100)}%** of their playoff earnings\n"
+                f"• NFC paired owner gets: **{int(NFC_PAIRED_RATE*100)}%** of AFC's earnings\n\n"
+                f"*NFC seed pays their paired AFC seed the {int(AFC_RETENTION_RATE*100)}%*"
+            ),
+            inline=False
+        )
+        
+        # Example
+        embed.add_field(
+            name="📊 Example: AFC #2 Wins Super Bowl ($300)",
+            value=(
+                "• AFC #2 owner receives: $60 (20%)\n"
+                "• NFC #2 owner keeps: $240 (80%)\n"
+                "• NFC #2 pays AFC #2 the $60\n\n"
+                "*NFC owners benefit from their paired AFC team's success!*"
+            ),
+            inline=False
+        )
+        
+        embed.set_footer(text="Use /viewpairings to see current season pairings")
         
         await interaction.response.send_message(embed=embed)
 
 
-    @app_commands.command(name="testpayments", description="[Admin] Test view of payment data by team names")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(season="Season year to view (e.g., 2025)")
-    async def test_payments(self, interaction: discord.Interaction, season: int):
-        """View payment data using team names instead of Discord users - for testing."""
-        await interaction.response.defer(ephemeral=True)
-        
-        conn = self.get_db_connection()
-        cursor = conn.cursor()
-        
-        # Get NFC standings with team info
-        cursor.execute('''
-            SELECT final_seed, team_id, wins, losses
-            FROM season_results
-            WHERE season_year = ? AND conference = 'NFC'
-            ORDER BY final_seed
-        ''', (season,))
-        nfc_standings = cursor.fetchall()
-        
-        # Get playoff results with team info (no scores in this schema)
-        cursor.execute('''
-            SELECT round, winner_team_id, loser_team_id
-            FROM playoff_results
-            WHERE season = ?
-            ORDER BY CASE round
-                WHEN 'wildcard' THEN 1
-                WHEN 'divisional' THEN 2
-                WHEN 'conference' THEN 3
-                WHEN 'superbowl' THEN 4
-            END
-        ''', (season,))
-        playoff_results = cursor.fetchall()
-        
-        # Get payments with team info
-        cursor.execute('''
-            SELECT p.payment_id, 
-                   (SELECT team_id FROM season_results WHERE user_discord_id = p.payer_discord_id AND season_year = ? LIMIT 1) as payer_team,
-                   (SELECT team_id FROM season_results WHERE user_discord_id = p.payee_discord_id AND season_year = ? LIMIT 1) as payee_team,
-                   p.amount, p.reason, p.is_paid
-            FROM payments p
-            WHERE p.season_year = ?
-            ORDER BY p.payment_id
-        ''', (season, season, season))
-        payments = cursor.fetchall()
-        conn.close()
-        
-        embed = discord.Embed(
-            title=f"🧪 Season {season} Test Data View",
-            description="Showing raw data by team names (test mode)",
-            color=discord.Color.purple(),
-            timestamp=datetime.utcnow()
-        )
-        
-        # NFC Standings
-        if nfc_standings:
-            nfc_lines = []
-            for seed, team, wins, losses in nfc_standings:
-                payer_mark = " 💵" if seed >= 8 else ""
-                nfc_lines.append(f"#{seed}: {team} ({wins}-{losses}){payer_mark}")
-            embed.add_field(
-                name="🏈 NFC Standings (💵 = Payer)",
-                value="\n".join(nfc_lines[:16]) or "No data",
-                inline=False
-            )
-        
-        # Playoff Results
-        if playoff_results:
-            round_names = {'wildcard': 'WC', 'divisional': 'DIV', 'conference': 'CONF', 'superbowl': 'SB'}
-            playoff_lines = []
-            for round_name, winner_team, loser_team in playoff_results:
-                playoff_lines.append(f"**{round_names.get(round_name, round_name)}:** {winner_team} def. {loser_team}")
-            embed.add_field(
-                name="🏆 Playoff Results",
-                value="\n".join(playoff_lines) or "No data",
-                inline=False
-            )
-        
-        # Payments
-        if payments:
-            payment_lines = []
-            for pid, payer_team, payee_team, amount, desc, is_paid in payments:  # Show all payments
-                status = "✅" if is_paid else "⏳"
-                payment_lines.append(f"{status} {payer_team or 'Unknown'} → {payee_team or 'Unknown'}: ${amount:.0f}")
-            total_payments = len(payments)
-            total_amount = sum(p[3] for p in payments)
-            paid_amount = sum(p[3] for p in payments if p[5])
-            embed.add_field(
-                name=f"💰 Payments ({total_payments} total, ${total_amount:.0f} owed, ${paid_amount:.0f} paid)",
-                value="\n".join(payment_lines) or "No payments",
-                inline=False
-            )
-        else:
-            embed.add_field(name="💰 Payments", value="No payments generated", inline=False)
-        
-        # Find the finances channel and send there
-        finances_channel = discord.utils.get(interaction.guild.text_channels, name='finances')
-        if finances_channel:
-            await finances_channel.send(embed=embed)
-            await interaction.followup.send(f"✅ Season {season} payment data posted to {finances_channel.mention}", ephemeral=True)
-        else:
-            await interaction.followup.send(embed=embed)
-
-
 async def setup(bot):
-    """Setup function to add the cog to the bot."""
     await bot.add_cog(ProfitabilityCog(bot))
