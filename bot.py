@@ -456,12 +456,22 @@ class MistressLIVBot(commands.Bot):
                 "`/players` - View player database\n"
                 "`/sync info` - Sync league info\n"
                 "`/sync stats` - Sync player stats\n"
-                "`/sync rosters` - Sync team rosters"
+                "`/sync rosters` - Sync team rosters\n"
+                "`/standings` - View league standings\n"
+                "`/schedule` - View game schedule"
             )
             embed.add_field(name="\ud83c\udfc8 MyMadden", value=mymadden, inline=False)
             
+            # Registration Commands
+            reg_cmds = (
+                "`/register` - Register as team owner\n"
+                "`/unregister` - Unregister from announcements\n"
+                "`/whoregistered` - See all registered owners"
+            )
+            embed.add_field(name="\ud83d\udcdd Registration", value=reg_cmds, inline=True)
+            
             # Info Commands
-            info_cmds = "`/help` - View all commands\n`/serverinfo` - Server details"
+            info_cmds = "`/help` - View all commands\n`/serverinfo` - Server details\n`/ping` - Check bot latency"
             embed.add_field(name="\u2139\ufe0f Info", value=info_cmds, inline=True)
             
             # Payment Commands
@@ -476,8 +486,21 @@ class MistressLIVBot(commands.Bot):
             )
             embed.add_field(name="\ud83d\udcb0 Payments & Dues", value=payment_cmds, inline=False)
             
+            # Wager Commands
+            wager_cmds = (
+                "`/wager` - Create a wager with opponent\n"
+                "`/mywagers` - View your active wagers\n"
+                "`/wagerboard` - Wager leaderboard\n"
+                "`/markwagerpaid` - Mark wager as paid"
+            )
+            embed.add_field(name="\ud83c\udfb0 Wagers", value=wager_cmds, inline=True)
+            
             # Profitability Commands
-            profit_cmds = "`/profitability` - League standings\n`/myprofit` - Your profit breakdown"
+            profit_cmds = (
+                "`/profitability` - League standings\n"
+                "`/myprofit` - Your profit breakdown\n"
+                "`/viewseasondata` - View season data"
+            )
             embed.add_field(name="\ud83d\udcca Profitability", value=profit_cmds, inline=True)
             
             # Fun Commands
@@ -485,7 +508,17 @@ class MistressLIVBot(commands.Bot):
             embed.add_field(name="\ud83d\ude24 Fun", value=fun_cmds, inline=True)
             
             # Admin Commands
-            admin_cmds = "`/announce` `/createpayment` `/clearpayment` `/resetwhiner`"
+            admin_cmds = (
+                "`/announce` - Post announcement\n"
+                "`/dmowners` - DM all team owners\n"
+                "`/createpayment` - Create payment\n"
+                "`/clearpayment` - Clear a payment\n"
+                "`/generatepayments` - Generate dues\n"
+                "`/setseeding` - Set playoff seeding\n"
+                "`/resetwhiner` - Reset whiner stats\n"
+                "`/registerall` - Register all owners\n"
+                "`/setuproles` - Create team roles"
+            )
             embed.add_field(name="\ud83d\udd27 Admin Only", value=admin_cmds, inline=False)
             
             embed.set_footer(text="Use / to access slash commands | !commands to show this list")
