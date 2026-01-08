@@ -262,69 +262,13 @@ class MistressLIVBot(commands.Bot):
         # since Server Members Intent is not available
         logger.info("Auto-registration will occur when users interact with bot commands")
     
-    async def auto_register_and_sync(self):
-        """Auto-register all members with team roles and sync their helmets."""
-        logger.info("Starting auto-registration and helmet sync...")
-        
-        guild = self.get_guild(self.guild_id)
-        if not guild:
-            logger.error(f"Could not find guild {self.guild_id}")
-            return
-        
-        registered = 0
-        helmets_synced = 0
-        
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            for member in guild.members:
-                if member.bot:
-                    continue
-                
-                # Find their team role
-                team_role = None
-                for role in member.roles:
-                    role_name_upper = role.name.upper()
-                    if role_name_upper in NFL_TEAMS:
-                        team_role = role_name_upper
-                        break
-                
-                if team_role:
-                    # Register in database
-                    cursor.execute(
-                        "UPDATE teams SET user_discord_id = ? WHERE team_id = ?",
-                        (member.id, team_role)
-                    )
-                    registered += 1
-                    
-                    # Sync helmet
-                    team_data = NFL_TEAMS[team_role]
-                    emoji = team_data['emoji']
-                    base_name = self.remove_helmet_from_name(member.display_name)
-                    new_nickname = f"{emoji} {base_name}"
-                    
-                    if member.display_name != new_nickname:
-                        try:
-                            if len(new_nickname) <= 32:
-                                await member.edit(nick=new_nickname if new_nickname != member.name else None)
-                                helmets_synced += 1
-                            else:
-                                await member.edit(nick=new_nickname[:32])
-                                helmets_synced += 1
-                        except discord.Forbidden:
-                            pass
-                        except Exception as e:
-                            logger.error(f"Error syncing helmet for {member.name}: {e}")
-            
-            conn.commit()
-            conn.close()
-            
-            logger.info(f"Auto-registration complete: {registered} team owners registered, {helmets_synced} helmets synced")
-            
-        except Exception as e:
-            logger.error(f"Error during auto-registration: {e}")
-        
+    # NOTE: auto_register_and_sync removed - requires Server Members Intent
+    # Registration now happens via:
+    # 1. /register command (user self-registers)
+    # 2. /registeruser @user (admin registers user)
+    # 3. /bulkregister (admin registers multiple users via mentions)
+    # 4. on_member_update listener (auto-registers when role is assigned)
+    
     async def on_app_command_completion(self, interaction: discord.Interaction, command):
         """Called after any slash command completes - auto-register user if they have a team role."""
         member = interaction.user

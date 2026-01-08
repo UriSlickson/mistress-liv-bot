@@ -62,11 +62,24 @@ class AutoSeedingCog(commands.Cog):
         return sqlite3.connect(self.db_path)
     
     def _get_team_owner(self, guild: discord.Guild, team_abbr: str) -> Optional[discord.Member]:
-        """Find the Discord member who owns a team based on their role."""
-        for member in guild.members:
-            for role in member.roles:
-                if role.name.upper() == team_abbr.upper():
-                    return member
+        """Find the Discord member who owns a team from the database registration."""
+        # Use database registration instead of guild.members (requires Server Members Intent)
+        user_id = self._get_registered_user_for_team(team_abbr)
+        if user_id:
+            return guild.get_member(user_id)
+        
+        # Fallback: check teams table
+        try:
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute('SELECT user_discord_id FROM teams WHERE team_id = ?', (team_abbr.upper(),))
+            result = cursor.fetchone()
+            conn.close()
+            if result and result[0]:
+                return guild.get_member(result[0])
+        except:
+            pass
+        
         return None
     
     def _get_registered_user_for_team(self, team_abbr: str) -> Optional[int]:
