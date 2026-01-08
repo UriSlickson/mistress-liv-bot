@@ -262,14 +262,24 @@ class CommandGuideCog(commands.Cog):
             )
             
             reg_embed.add_field(
-                name="🏈 Registering",
+                name="✨ Automatic Registration",
+                value=(
+                    "**When an admin assigns you a team role, you are automatically registered!**\n\n"
+                    "You'll receive:\n"
+                    "• A welcome DM confirming your team\n"
+                    "• Your team's helmet emoji added to your name\n"
+                    "• League announcements via DM\n\n"
+                    "*No action needed - it's all automatic!*"
+                ),
+                inline=False
+            )
+            
+            reg_embed.add_field(
+                name="🏈 Manual Registration",
                 value=(
                     "**Command:** `/register`\n\n"
-                    "Registers you as a team owner based on your team role. "
-                    "This enables:\n"
-                    "• Receiving league announcements via DM\n"
-                    "• Automatic helmet emoji sync on your nickname\n"
-                    "• Proper tracking in payment/wager systems"
+                    "If you already have a team role but weren't auto-registered, "
+                    "run this command to register yourself."
                 ),
                 inline=False
             )
@@ -395,10 +405,12 @@ class CommandGuideCog(commands.Cog):
             admin_embed.add_field(
                 name="📢 Announcements",
                 value=(
-                    "**Post announcement:** `/announce message channels`\n"
-                    "**DM all owners:** `/dmowners message`\n"
-                    "**Post command list:** `/postcommands channel`\n"
-                    "**Post this guide:** `/postguide channel`"
+                    "**Channels only:** `/announce message`\n"
+                    "Posts to #townsquare & #announcements\n\n"
+                    "**Channels + DM all:** `/announceall message`\n"
+                    "Posts to channels AND DMs every member\n\n"
+                    "**DM only:** `/dmowners message`\n"
+                    "**Post guide:** `/postguide channel`"
                 ),
                 inline=False
             )

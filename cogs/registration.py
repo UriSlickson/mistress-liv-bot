@@ -382,5 +382,64 @@ class RegistrationCog(commands.Cog):
                 pass
 
 
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        """
+        Listen for role changes and auto-register when a team role is assigned.
+        """
+        # Get roles that were added
+        added_roles = set(after.roles) - set(before.roles)
+        
+        if not added_roles:
+            return
+        
+        # Check if any added role is a team role
+        for role in added_roles:
+            team_abbrev = role.name.upper()
+            if team_abbrev in NFL_TEAM_ABBREVS:
+                # Auto-register this user for this team
+                logger.info(f"Auto-registering {after.display_name} ({after.id}) for team {team_abbrev} (role assigned)")
+                
+                if self.register_team_owner(team_abbrev, after.id):
+                    logger.info(f"Successfully auto-registered {after.display_name} as {team_abbrev} owner")
+                    
+                    # Try to sync their helmet emoji
+                    try:
+                        emoji = NFL_TEAM_EMOJIS.get(team_abbrev, '')
+                        if emoji:
+                            base_name = self.remove_helmet_from_name(after.display_name)
+                            new_nickname = f"{emoji} {base_name}"
+                            if len(new_nickname) > 32:
+                                new_nickname = new_nickname[:32]
+                            await after.edit(nick=new_nickname)
+                            logger.info(f"Synced helmet for {after.display_name}")
+                    except discord.Forbidden:
+                        logger.warning(f"Could not sync helmet for {after.display_name} - insufficient permissions")
+                    except Exception as e:
+                        logger.error(f"Error syncing helmet for {after.display_name}: {e}")
+                    
+                    # Try to notify the user
+                    try:
+                        emoji = NFL_TEAM_EMOJIS.get(team_abbrev, '🏈')
+                        await after.send(
+                            f"{emoji} **Welcome to Mistress LIV!**\n\n"
+                            f"You've been automatically registered as the **{team_abbrev}** team owner.\n\n"
+                            f"You will now receive:\n"
+                            f"• 📢 League announcements via DM\n"
+                            f"• 🏈 Automatic helmet emoji sync\n"
+                            f"• 📬 League-wide messages\n\n"
+                            f"Use `/help` to see available commands!"
+                        )
+                    except discord.Forbidden:
+                        logger.warning(f"Could not DM {after.display_name} - DMs disabled")
+                    except Exception as e:
+                        logger.error(f"Error DMing {after.display_name}: {e}")
+                else:
+                    logger.error(f"Failed to auto-register {after.display_name} for {team_abbrev}")
+                
+                # Only register for the first team role found
+                break
+
+
 async def setup(bot):
     await bot.add_cog(RegistrationCog(bot))
