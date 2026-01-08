@@ -111,6 +111,7 @@ class MistressLIVBot(commands.Bot):
         await self.load_extension('cogs.announcements')
         await self.load_extension('cogs.registration')
         await self.load_extension('cogs.whiner')
+        await self.load_extension('cogs.auto_settlement')
         
         # Sync slash commands
         guild = discord.Object(id=self.guild_id)
@@ -491,7 +492,8 @@ class MistressLIVBot(commands.Bot):
                 "`/wager` - Create a wager with opponent\n"
                 "`/mywagers` - View your active wagers\n"
                 "`/wagerboard` - Wager leaderboard\n"
-                "`/markwagerpaid` - Mark wager as paid"
+                "`/markwagerpaid` - Mark wager as paid\n"
+                "`/pendingwagers` - View unsettled wagers"
             )
             embed.add_field(name="\ud83c\udfb0 Wagers", value=wager_cmds, inline=True)
             
@@ -517,7 +519,9 @@ class MistressLIVBot(commands.Bot):
                 "`/setseeding` - Set playoff seeding\n"
                 "`/resetwhiner` - Reset whiner stats\n"
                 "`/registerall` - Register all owners\n"
-                "`/setuproles` - Create team roles"
+                "`/setuproles` - Create team roles\n"
+                "`/settlewager` - Manually settle wager\n"
+                "`/parsescore` - Test score parsing"
             )
             embed.add_field(name="\ud83d\udd27 Admin Only", value=admin_cmds, inline=False)
             
