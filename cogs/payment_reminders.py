@@ -222,23 +222,48 @@ class PaymentRemindersCog(commands.Cog):
             except discord.Forbidden:
                 logger.warning(f"Could not DM user {user.display_name}, will post in channel")
             
-            # Also post in a public channel (if configured)
-            # Find a suitable channel (wagers channel or general)
+            # Post in #wagers channel (primary) or fallback channels
             for guild in self.bot.guilds:
-                # Look for a wagers channel or general channel
-                channel = discord.utils.get(guild.text_channels, name='wagers')
+                # Prioritize #wagers channel for logging
+                channel = None
+                for ch in guild.text_channels:
+                    if ch.name.lower() in ['wagers', 'wager-log', 'wager-logs']:
+                        channel = ch
+                        break
+                
                 if channel is None:
                     channel = discord.utils.get(guild.text_channels, name='bot-commands')
                 if channel is None:
                     channel = discord.utils.get(guild.text_channels, name='general')
                 
                 if channel:
-                    # Create a public reminder (less detailed)
+                    # Create a detailed public reminder for the wagers channel
                     public_embed = discord.Embed(
                         title="⏰ Payment Reminder",
-                        description=f"{user.mention} has **{len(wagers)}** unpaid wager(s) totaling **${total_owed:.2f}**.\n\nPlease pay your debts! Use `/mywagers` to see details.",
+                        description=f"{user.mention} owes **${total_owed:.2f}** from **{len(wagers)}** unpaid wager(s)",
                         color=discord.Color.red()
                     )
+                    
+                    # Add wager details
+                    for w in wagers[:5]:  # Show up to 5 wagers
+                        winner = await self.bot.fetch_user(w['winner_id'])
+                        winner_name = winner.display_name if winner else "Unknown"
+                        home_name = TEAM_NAMES.get(w['home_team'], w['home_team'])
+                        away_name = TEAM_NAMES.get(w['away_team'], w['away_team'])
+                        public_embed.add_field(
+                            name=f"${w['amount']:.2f} to {winner_name}",
+                            value=f"{away_name} @ {home_name} (Wk {w['week']})",
+                            inline=True
+                        )
+                    
+                    if len(wagers) > 5:
+                        public_embed.add_field(
+                            name="...",
+                            value=f"And {len(wagers) - 5} more",
+                            inline=True
+                        )
+                    
+                    public_embed.set_footer(text="Reminder #{} | Use /paid to confirm payments".format(wagers[0]['reminder_count'] + 1))
                     public_embed.timestamp = datetime.now()
                     
                     try:

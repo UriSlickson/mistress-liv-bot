@@ -36,7 +36,7 @@ TEAM_NAMES = {
 class WagerPaidSelect(discord.ui.Select):
     """Dropdown select for choosing which wager to mark as paid."""
     
-    def __init__(self, options, db_path, guild):
+    def __init__(self, options, db_path, guild, wagers_cog=None):
         super().__init__(
             placeholder="Select a wager to mark as paid...",
             min_values=1,
@@ -45,6 +45,7 @@ class WagerPaidSelect(discord.ui.Select):
         )
         self.db_path = db_path
         self.guild = guild
+        self.wagers_cog = wagers_cog
     
     async def callback(self, interaction: discord.Interaction):
         wager_id = int(self.values[0])
@@ -88,14 +89,28 @@ class WagerPaidSelect(discord.ui.Select):
         embed.add_field(name="📅 Week", value=f"Season {season}, Week {week}", inline=True)
         
         await interaction.response.edit_message(embed=embed, view=None)
+        
+        # Log to #wagers channel
+        if self.wagers_cog:
+            log_embed = discord.Embed(
+                title="✅ Wager Payment Confirmed!",
+                description=f"**{loser_name}** paid **{interaction.user.display_name}**",
+                color=discord.Color.green()
+            )
+            log_embed.add_field(name="💵 Amount", value=f"${amount:.2f}", inline=True)
+            log_embed.add_field(name="🏈 Game", value=f"{away_name} @ {home_name}", inline=True)
+            log_embed.add_field(name="📅 Week", value=f"SZN {season} Wk {week}", inline=True)
+            log_embed.set_footer(text=f"Wager #{wager_id} - PAID")
+            log_embed.timestamp = datetime.now()
+            await self.wagers_cog.log_to_wagers_channel(self.guild, log_embed)
 
 
 class WagerPaidSelectView(discord.ui.View):
     """View containing the wager selection dropdown."""
     
-    def __init__(self, options, db_path, guild):
+    def __init__(self, options, db_path, guild, wagers_cog=None):
         super().__init__(timeout=60)
-        self.add_item(WagerPaidSelect(options, db_path, guild))
+        self.add_item(WagerPaidSelect(options, db_path, guild, wagers_cog))
 
 
 class WagersCog(commands.Cog):
@@ -105,6 +120,23 @@ class WagersCog(commands.Cog):
         self.bot = bot
         self.db_path = bot.db_path
         self._ensure_tables()
+    
+    async def get_wagers_channel(self, guild):
+        """Find the #wagers channel for logging. Creates it if it doesn't exist."""
+        # Look for existing wagers channel
+        for channel in guild.text_channels:
+            if channel.name.lower() in ['wagers', 'wager-log', 'wager-logs']:
+                return channel
+        return None
+    
+    async def log_to_wagers_channel(self, guild, embed):
+        """Log an embed to the wagers channel if it exists."""
+        channel = await self.get_wagers_channel(guild)
+        if channel:
+            try:
+                await channel.send(embed=embed)
+            except Exception as e:
+                logger.error(f"Failed to log to wagers channel: {e}")
     
     def _ensure_tables(self):
         """Ensure wagers table has all required columns."""
@@ -407,6 +439,26 @@ class WagersCog(commands.Cog):
         )
         
         await interaction.followup.send(embed=embed)
+        
+        # Log to #wagers channel
+        log_embed = discord.Embed(
+            title="🎰 New Wager Active!",
+            description=f"**{challenger_mention}** vs **{interaction.user.mention}**",
+            color=discord.Color.blue()
+        )
+        log_embed.add_field(name="💰 Amount", value=f"${amount:.2f}", inline=True)
+        log_embed.add_field(name="🏈 Game", value=f"{away_name} @ {home_name}", inline=True)
+        log_embed.add_field(name="📅 Week", value=f"SZN {season} Wk {week}", inline=True)
+        if challenger_pick and opponent_pick:
+            challenger_name = challenger.display_name if challenger else "Challenger"
+            log_embed.add_field(
+                name="🎯 Picks",
+                value=f"{challenger_name}: **{TEAM_NAMES.get(challenger_pick, challenger_pick)}** | {interaction.user.display_name}: **{TEAM_NAMES.get(opponent_pick, opponent_pick)}**",
+                inline=False
+            )
+        log_embed.set_footer(text=f"Wager #{wager_id}")
+        log_embed.timestamp = datetime.now()
+        await self.log_to_wagers_channel(interaction.guild, log_embed)
     
     @app_commands.command(name="declinewager", description="Decline a pending wager")
     @app_commands.describe(wager_id="The ID of the wager to decline")
@@ -669,11 +721,45 @@ class WagersCog(commands.Cog):
         embed.add_field(name="💸 Owes", value=loser_mention, inline=True)
         embed.add_field(
             name="📋 Next Steps",
-            value=f"{loser_mention} pays ${amount:.2f} to {winner_mention}\nThen {winner_mention} uses `/markwagerpaid {wager_id}` to confirm",
+            value=f"{loser_mention} pays ${amount:.2f} to {winner_mention}\nThen {winner_mention} uses `/paid` to confirm",
             inline=False
         )
         
         await interaction.followup.send(embed=embed)
+        
+        # Log to #wagers channel
+        log_embed = discord.Embed(
+            title="🏆 Wager Result!",
+            description=f"**{winning_team_name}** won the game!",
+            color=discord.Color.gold()
+        )
+        log_embed.add_field(name="🏆 Winner", value=winner_mention, inline=True)
+        log_embed.add_field(name="💸 Owes", value=loser_mention, inline=True)
+        log_embed.add_field(name="💰 Amount", value=f"${amount:.2f}", inline=True)
+        log_embed.add_field(name="🏈 Game", value=f"{away_name} @ {home_name}", inline=True)
+        log_embed.add_field(name="📅 Week", value=f"SZN {season} Wk {week}", inline=True)
+        log_embed.set_footer(text=f"Wager #{wager_id} | {loser_mention} owes {winner_mention}")
+        log_embed.timestamp = datetime.now()
+        await self.log_to_wagers_channel(interaction.guild, log_embed)
+        
+        # DM the loser about the debt
+        if loser_member:
+            try:
+                dm_embed = discord.Embed(
+                    title="💸 You Lost a Wager!",
+                    description=f"You owe **${amount:.2f}** to **{winner_member.display_name if winner_member else 'the winner'}**",
+                    color=discord.Color.red()
+                )
+                dm_embed.add_field(name="🏈 Game", value=f"{away_name} @ {home_name}", inline=True)
+                dm_embed.add_field(name="🏆 Winner", value=winning_team_name, inline=True)
+                dm_embed.add_field(
+                    name="📋 Next Steps",
+                    value=f"Pay {winner_member.mention if winner_member else 'the winner'}, then they'll use `/paid` to confirm.",
+                    inline=False
+                )
+                await loser_member.send(embed=dm_embed)
+            except:
+                pass  # DMs might be disabled
     
     @app_commands.command(name="paid", description="Mark a wager as paid - select by opponent")
     @app_commands.describe(opponent="The person who paid you (optional - shows all if not specified)")
@@ -744,6 +830,20 @@ class WagersCog(commands.Cog):
             embed.add_field(name="📅 Week", value=f"Season {season}, Week {week}", inline=True)
             
             await interaction.followup.send(embed=embed)
+            
+            # Log to #wagers channel
+            loser_mention = loser_member.mention if loser_member else f"<@{loser_id}>"
+            log_embed = discord.Embed(
+                title="✅ Wager Payment Confirmed!",
+                description=f"**{loser_name}** paid **{interaction.user.display_name}**",
+                color=discord.Color.green()
+            )
+            log_embed.add_field(name="💵 Amount", value=f"${amount:.2f}", inline=True)
+            log_embed.add_field(name="🏈 Game", value=f"{away_name} @ {home_name}", inline=True)
+            log_embed.add_field(name="📅 Week", value=f"SZN {season} Wk {week}", inline=True)
+            log_embed.set_footer(text=f"Wager #{wager_id} - PAID")
+            log_embed.timestamp = datetime.now()
+            await self.log_to_wagers_channel(interaction.guild, log_embed)
             return
         
         # Multiple wagers - show selection dropdown
@@ -777,7 +877,7 @@ class WagersCog(commands.Cog):
                 inline=True
             )
         
-        view = WagerPaidSelectView(options, self.db_path, interaction.guild)
+        view = WagerPaidSelectView(options, self.db_path, interaction.guild, self)
         await interaction.followup.send(embed=embed, view=view)
     
     @app_commands.command(name="markwagerpaid", description="[Legacy] Mark a wager as paid by ID")
@@ -831,6 +931,8 @@ class WagersCog(commands.Cog):
         away_name = TEAM_NAMES.get(away_team, away_team)
         home_name = TEAM_NAMES.get(home_team, home_team)
         
+        loser_name = loser_member.display_name if loser_member else f"User {loser}"
+        
         embed = discord.Embed(
             title="💰 Wager Paid!",
             description=f"Payment confirmed from {loser_mention}!",
@@ -841,6 +943,19 @@ class WagersCog(commands.Cog):
         embed.add_field(name="👤 Paid by", value=loser_mention, inline=True)
         
         await interaction.followup.send(embed=embed)
+        
+        # Log to #wagers channel
+        log_embed = discord.Embed(
+            title="✅ Wager Payment Confirmed!",
+            description=f"**{loser_name}** paid **{interaction.user.display_name}**",
+            color=discord.Color.green()
+        )
+        log_embed.add_field(name="💵 Amount", value=f"${amount:.2f}", inline=True)
+        log_embed.add_field(name="🏈 Game", value=f"{away_name} @ {home_name}", inline=True)
+        log_embed.add_field(name="📅 Week", value=f"SZN {season} Wk {week}", inline=True)
+        log_embed.set_footer(text=f"Wager #{wager_id} - PAID")
+        log_embed.timestamp = datetime.now()
+        await self.log_to_wagers_channel(interaction.guild, log_embed)
     
     @app_commands.command(name="wagerboard", description="View the wager leaderboard")
     async def wagerboard(self, interaction: discord.Interaction):
