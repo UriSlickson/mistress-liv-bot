@@ -400,6 +400,88 @@ class AnnouncementsCog(commands.Cog):
             ephemeral=True
         )
 
+    
+    @app_commands.command(name="clearchannel", description="[Admin] Delete all messages in a channel to start fresh")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        channel="The channel to clear (defaults to current channel)",
+        confirm="Type 'CONFIRM' to proceed with deletion"
+    )
+    async def clear_channel(
+        self,
+        interaction: discord.Interaction,
+        confirm: str,
+        channel: Optional[discord.TextChannel] = None
+    ):
+        """
+        Delete all messages in a channel. Use with caution!
+        Requires typing 'CONFIRM' to prevent accidental deletion.
+        """
+        if confirm != "CONFIRM":
+            await interaction.response.send_message(
+                "⚠️ **Safety Check Failed**\n\n"
+                "To clear a channel, you must type `CONFIRM` (all caps) in the confirm field.\n\n"
+                "Example: `/clearchannel confirm:CONFIRM channel:#channel-name`",
+                ephemeral=True
+            )
+            return
+        
+        target_channel = channel or interaction.channel
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            # Get channel name before clearing
+            channel_name = target_channel.name
+            
+            # Count messages first
+            message_count = 0
+            async for _ in target_channel.history(limit=None):
+                message_count += 1
+            
+            if message_count == 0:
+                await interaction.followup.send(
+                    f"ℹ️ #{channel_name} is already empty!",
+                    ephemeral=True
+                )
+                return
+            
+            # Delete messages in batches
+            deleted_count = 0
+            
+            # Try bulk delete first (only works for messages < 14 days old)
+            try:
+                deleted = await target_channel.purge(limit=None)
+                deleted_count = len(deleted)
+            except discord.HTTPException:
+                # If bulk delete fails, delete one by one
+                async for message in target_channel.history(limit=None):
+                    try:
+                        await message.delete()
+                        deleted_count += 1
+                        await asyncio.sleep(0.5)  # Rate limit protection
+                    except:
+                        pass
+            
+            await interaction.followup.send(
+                f"✅ **Channel Cleared**\n\n"
+                f"🗑️ Deleted **{deleted_count}** messages from #{channel_name}",
+                ephemeral=True
+            )
+            
+            logger.info(f"Channel #{channel_name} cleared by {interaction.user.display_name} - {deleted_count} messages deleted")
+            
+        except discord.Forbidden:
+            await interaction.followup.send(
+                f"❌ I don't have permission to delete messages in #{target_channel.name}",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Error clearing channel: {str(e)}",
+                ephemeral=True
+            )
+
 
 async def setup(bot):
     await bot.add_cog(AnnouncementsCog(bot))

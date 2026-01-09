@@ -60,6 +60,17 @@ class CommandGuideCog(commands.Cog):
             )
             
             admin_embed.add_field(
+                name="🗑️ Channel Management",
+                value=(
+                    "**Clear a channel:** `/clearchannel confirm:CONFIRM channel:#channel`\n"
+                    "Deletes ALL messages in a channel to start fresh.\n"
+                    "Must type `CONFIRM` to prevent accidental deletion.\n\n"
+                    "*Example: `/clearchannel confirm:CONFIRM channel:#otb`*"
+                ),
+                inline=False
+            )
+            
+            admin_embed.add_field(
                 name="💰 Season End Setup - Step by Step",
                 value=(
                     "**STEP 1: Import Seedings (after Super Bowl)**\n"
@@ -149,6 +160,19 @@ class CommandGuideCog(commands.Cog):
             )
             
             mymadden_embed1.add_field(
+                name="⭐ MOST IMPORTANT COMMANDS",
+                value=(
+                    "**`/sync info`** - Sync league info from console\n"
+                    "**`/sync rosters`** - Sync team rosters from console\n"
+                    "**`/sync stats`** - Sync player stats from console\n\n"
+                    "**`/players`** - Post players to #otb channel\n\n"
+                    "**`/game-channel create`** - Create a game channel\n"
+                    "**`/game-channel clear`** - Clear a game channel"
+                ),
+                inline=False
+            )
+            
+            mymadden_embed1.add_field(
                 name="📋 League Info Commands",
                 value=(
                     "`/web` - Link to league website\n"
@@ -156,7 +180,6 @@ class CommandGuideCog(commands.Cog):
                     "`/standings` - Link to league standings\n"
                     "`/stats` - Link to league stats\n"
                     "`/trades` - Link to league trades\n"
-                    "`/players` - Link to player search\n"
                     "`/injuries` - Link to injuries table\n"
                     "`/teams` - Link to all teams\n"
                     "`/week` - Current year, stage, and week"
@@ -387,6 +410,29 @@ class CommandGuideCog(commands.Cog):
                     "• NFC seed pays their paired AFC seed the 20%\n\n"
                     "**Example:** AFC #3 wins Divisional ($100)\n"
                     "→ AFC #3 gets $20, NFC #3 keeps $80, NFC pays AFC $20"
+                ),
+                inline=False
+            )
+            
+            payout_embed.add_field(
+                name="📝 ADMIN: How to Process Season End Payouts",
+                value=(
+                    "**STEP 1: Set Seedings After Playoffs**\n"
+                    "Go to MyMadden standings page and get final seeds.\n"
+                    "Run for each conference:\n"
+                    "`/bulkseeding 2027 AFC NE,PIT,CAR,NYG,LAR,BUF,JAX,DEN,WAS,LAC,KC,HOU,CHI,ARI,CIN,SF`\n"
+                    "`/bulkseeding 2027 NFC LV,ATL,TEN,MIA,SEA,DAL,PHI,IND,GB,NO,TB,MIN,CLE,DET,NYJ,BAL`\n"
+                    "*(List teams in order from seed 1-16)*\n\n"
+                    "**STEP 2: Record Playoff Winners**\n"
+                    "For each playoff round winner, run:\n"
+                    "`/setplayoffwinner 2027 wildcard @winner AFC`\n"
+                    "`/setplayoffwinner 2027 divisional @winner NFC`\n"
+                    "`/setplayoffwinner 2027 conference @winner AFC`\n"
+                    "`/setplayoffwinner 2027 superbowl @winner`\n\n"
+                    "**STEP 3: Generate Payments**\n"
+                    "`/generatepayments 2027`\n\n"
+                    "**STEP 4: Post to Division Channels**\n"
+                    "`/postpayments 2027`"
                 ),
                 inline=False
             )
