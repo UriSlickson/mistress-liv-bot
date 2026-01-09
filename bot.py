@@ -114,6 +114,7 @@ class MistressLIVBot(commands.Bot):
         await self.load_extension('cogs.auto_settlement')
         await self.load_extension('cogs.command_guide')
         await self.load_extension('cogs.auto_seeding')
+        await self.load_extension('cogs.payment_reminders')
         
         # Sync slash commands
         guild = discord.Object(id=self.guild_id)
