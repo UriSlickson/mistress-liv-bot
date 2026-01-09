@@ -38,363 +38,7 @@ class CommandGuideCog(commands.Cog):
             embeds_posted = 0
             
             # =====================
-            # HEADER / INTRO
-            # =====================
-            intro_embed = discord.Embed(
-                title="📖 Mistress LIV Bot - Complete Command Guide",
-                description=(
-                    "Welcome to the official command guide for **Mistress LIV Bot**!\n\n"
-                    "This guide covers all available commands organized by action type. "
-                    "Use `/` to access slash commands.\n\n"
-                    "**Quick Reference:** Type `!commands` for a condensed command list."
-                ),
-                color=discord.Color.gold(),
-                timestamp=datetime.utcnow()
-            )
-            intro_embed.set_footer(text="Mistress LIV Bot • Command Guide")
-            await channel.send(embed=intro_embed)
-            embeds_posted += 1
-            
-            # =====================
-            # WAGERS SECTION
-            # =====================
-            wager_embed = discord.Embed(
-                title="🎰 Making Wagers",
-                description="Create and manage wagers with other league members on any game.",
-                color=discord.Color.purple()
-            )
-            
-            wager_embed.add_field(
-                name="📝 Creating a Wager",
-                value=(
-                    "**Command:** `/wager`\n\n"
-                    "**Parameters:**\n"
-                    "• `opponent` - The person you want to bet against\n"
-                    "• `amount` - The wager amount (e.g., $5, $10)\n"
-                    "• `your_pick` - The team YOU think will win\n"
-                    "• `opponent_pick` - The team your opponent gets\n"
-                    "• `week` - The week number of the game\n"
-                    "• `season` - The season number (optional)\n\n"
-                    "**Example:** `/wager @JohnDoe 10 KC BUF 15`\n"
-                    "*You bet $10 that KC beats BUF in Week 15*"
-                ),
-                inline=False
-            )
-            
-            wager_embed.add_field(
-                name="✅ Accepting/Declining Wagers",
-                value=(
-                    "When someone creates a wager with you, you'll be notified.\n\n"
-                    "**Accept:** `/acceptwager wager_id`\n"
-                    "**Decline:** `/declinewager wager_id`\n\n"
-                    "*The wager ID is shown in the notification*"
-                ),
-                inline=False
-            )
-            
-            wager_embed.add_field(
-                name="📋 Viewing Your Wagers",
-                value=(
-                    "**Your wagers:** `/mywagers`\n"
-                    "Shows all your pending, active, and completed wagers.\n\n"
-                    "**Pending wagers:** `/pendingwagers`\n"
-                    "Shows wagers waiting for game results.\n\n"
-                    "**Leaderboard:** `/wagerboard`\n"
-                    "See who's winning and losing the most in wagers."
-                ),
-                inline=False
-            )
-            
-            wager_embed.add_field(
-                name="🏆 Settling Wagers",
-                value=(
-                    "**Auto-Settlement:** Wagers are automatically settled when "
-                    "game scores are posted in #scores by MyMadden bot.\n\n"
-                    "**Manual Claim:** `/wagerwin wager_id winning_team`\n"
-                    "Claim victory if auto-settlement didn't trigger.\n\n"
-                    "**Check Score:** `/checkscore away_team home_team week`\n"
-                    "Manually check a game result from MyMadden website."
-                ),
-                inline=False
-            )
-            
-            wager_embed.add_field(
-                name="💵 Marking Wagers Paid",
-                value=(
-                    "**Command:** `/markwagerpaid wager_id`\n\n"
-                    "After paying the winner, use this command to mark it complete. "
-                    "Only the winner can confirm payment received."
-                ),
-                inline=False
-            )
-            
-            wager_embed.add_field(
-                name="❌ Canceling Wagers",
-                value=(
-                    "**Command:** `/cancelwager wager_id`\n\n"
-                    "Cancel a wager you created before it's accepted."
-                ),
-                inline=False
-            )
-            
-            await channel.send(embed=wager_embed)
-            embeds_posted += 1
-            
-            # =====================
-            # SEASON END PAYOUTS
-            # =====================
-            payout_embed = discord.Embed(
-                title="💰 Season End Payouts",
-                description="Understanding how playoff earnings and payments work.",
-                color=discord.Color.green()
-            )
-            
-            payout_embed.add_field(
-                name="🏆 Playoff Payout Values",
-                value=(
-                    "**Wild Card/Bye Win:** $50\n"
-                    "**Divisional Win:** $100\n"
-                    "**Conference Championship:** $200\n"
-                    "**Super Bowl Win:** $300\n\n"
-                    "*Maximum possible: $650 (winning all rounds)*"
-                ),
-                inline=False
-            )
-            
-            payout_embed.add_field(
-                name="📤 NFC Pot System (Seeds 8-16)",
-                value=(
-                    "NFC Seeds 8-16 pay into the pot:\n\n"
-                    "• **#15, #16:** $100 each → Wildcard Winners\n"
-                    "• **#13, #14:** $100 each → Divisional Winners\n"
-                    "• **#11, #12:** $100 each → Conference Winner\n"
-                    "• **#8, #9, #10:** $100 each → Super Bowl Winner"
-                ),
-                inline=False
-            )
-            
-            payout_embed.add_field(
-                name="🔗 AFC/NFC Seed Pairing (Seeds 1-7)",
-                value=(
-                    "Each NFC playoff seed is paired with the same AFC seed.\n\n"
-                    "**When AFC team earns playoff money:**\n"
-                    "• AFC owner keeps: **20%** of earnings\n"
-                    "• NFC paired owner keeps: **80%** of AFC earnings\n"
-                    "• NFC seed pays their paired AFC seed the 20%\n\n"
-                    "**Example:** AFC #3 wins Divisional ($100)\n"
-                    "→ AFC #3 gets $20, NFC #3 keeps $80, NFC pays AFC $20"
-                ),
-                inline=False
-            )
-            
-            payout_embed.add_field(
-                name="📊 Viewing Payouts",
-                value=(
-                    "**View payout rules:** `/payoutstructure`\n"
-                    "**View seed pairings:** `/viewpairings [season]`\n"
-                    "**League profitability:** `/profitability [season]`\n"
-                    "**Your profitability:** `/myprofit`"
-                ),
-                inline=False
-            )
-            
-            await channel.send(embed=payout_embed)
-            embeds_posted += 1
-            
-            # =====================
-            # PAYMENTS & DUES
-            # =====================
-            payment_embed = discord.Embed(
-                title="💵 Payments & Dues",
-                description="Track who owes you money and who you owe.",
-                color=discord.Color.blue()
-            )
-            
-            payment_embed.add_field(
-                name="👀 Viewing Payments",
-                value=(
-                    "**Your summary:** `/mypayments`\n"
-                    "Complete overview of what you owe and what's owed to you.\n\n"
-                    "**Who owes you:** `/whooowesme`\n"
-                    "See all unpaid debts owed TO you.\n\n"
-                    "**Who you owe:** `/whoiowe`\n"
-                    "See all unpaid debts YOU owe.\n\n"
-                    "**All payments:** `/paymentschedule [season]`\n"
-                    "View all outstanding payments league-wide."
-                ),
-                inline=False
-            )
-            
-            payment_embed.add_field(
-                name="✅ Marking Payments",
-                value=(
-                    "**Command:** `/markpaid debtor creditor amount`\n\n"
-                    "**Parameters:**\n"
-                    "• `debtor` - The person who paid\n"
-                    "• `creditor` - The person who received payment\n"
-                    "• `amount` - The amount paid\n\n"
-                    "**Example:** `/markpaid @JohnDoe @JaneSmith 50`"
-                ),
-                inline=False
-            )
-            
-            payment_embed.add_field(
-                name="🏆 Leaderboards",
-                value=(
-                    "**Top earners:** `/topearners [season]`\n"
-                    "Who's made the most money overall.\n\n"
-                    "**Top losers:** `/toplosers [season]`\n"
-                    "Who's lost the most money overall."
-                ),
-                inline=False
-            )
-            
-            await channel.send(embed=payment_embed)
-            embeds_posted += 1
-            
-            # =====================
-            # REGISTRATION
-            # =====================
-            reg_embed = discord.Embed(
-                title="📝 Registration",
-                description="Register as a team owner to receive announcements and get your helmet emoji.",
-                color=discord.Color.teal()
-            )
-            
-            reg_embed.add_field(
-                name="✨ Automatic Registration",
-                value=(
-                    "**When an admin assigns you a team role, you are automatically registered!**\n\n"
-                    "You'll receive:\n"
-                    "• A welcome DM confirming your team\n"
-                    "• Your team's helmet emoji added to your name\n"
-                    "• League announcements via DM\n\n"
-                    "*No action needed - it's all automatic!*"
-                ),
-                inline=False
-            )
-            
-            reg_embed.add_field(
-                name="🏈 Manual Registration",
-                value=(
-                    "**Command:** `/register`\n\n"
-                    "If you already have a team role but weren't auto-registered, "
-                    "run this command to register yourself."
-                ),
-                inline=False
-            )
-            
-            reg_embed.add_field(
-                name="🚪 Unregistering",
-                value=(
-                    "**Command:** `/unregister`\n\n"
-                    "Remove yourself from the team owner list."
-                ),
-                inline=False
-            )
-            
-            await channel.send(embed=reg_embed)
-            embeds_posted += 1
-            
-            # =====================
-            # PROFITABILITY
-            # =====================
-            profit_embed = discord.Embed(
-                title="📊 Profitability Tracking",
-                description="Track your franchise's financial performance across seasons.",
-                color=discord.Color.gold()
-            )
-            
-            profit_embed.add_field(
-                name="📈 Viewing Profitability",
-                value=(
-                    "**League rankings:** `/profitability [season]`\n"
-                    "See how everyone ranks in net profit.\n\n"
-                    "**Your breakdown:** `/myprofit`\n"
-                    "Detailed view of your earnings, dues, and wager profits.\n\n"
-                    "**Payout structure:** `/payoutstructure`\n"
-                    "Complete explanation of how payouts work.\n\n"
-                    "**Seed pairings:** `/viewpairings [season]`\n"
-                    "View AFC/NFC seed pairings and earnings."
-                ),
-                inline=False
-            )
-            
-            profit_embed.add_field(
-                name="💡 Understanding Net Profit",
-                value=(
-                    "**Net Profit** = Playoff Earnings - Dues Paid + Wager Profit\n\n"
-                    "• **Playoff Earnings:** Money received from playoff wins\n"
-                    "• **Dues Paid:** Money owed as a lower NFC seed\n"
-                    "• **Wager Profit:** Net from wager wins minus losses"
-                ),
-                inline=False
-            )
-            
-            await channel.send(embed=profit_embed)
-            embeds_posted += 1
-            
-            # =====================
-            # FUN COMMANDS
-            # =====================
-            fun_embed = discord.Embed(
-                title="😤 Fun Commands",
-                description="Track who complains the most in the league!",
-                color=discord.Color.orange()
-            )
-            
-            fun_embed.add_field(
-                name="🏆 Whiner Leaderboard",
-                value=(
-                    "**Command:** `/whiner [timeframe]`\n\n"
-                    "See who complains the most! Tracks keywords like:\n"
-                    "*\"bs\", \"rigged\", \"unfair\", \"cheese\", \"glitch\"*, etc.\n\n"
-                    "**Timeframes:** `all`, `week`, `month`, `season`"
-                ),
-                inline=False
-            )
-            
-            fun_embed.add_field(
-                name="📊 Your Stats",
-                value=(
-                    "**Command:** `/mywhines`\n\n"
-                    "See your own complaint statistics."
-                ),
-                inline=False
-            )
-            
-            await channel.send(embed=fun_embed)
-            embeds_posted += 1
-            
-            # =====================
-            # INFO COMMANDS
-            # =====================
-            info_embed = discord.Embed(
-                title="ℹ️ Info Commands",
-                description="General information and help commands.",
-                color=discord.Color.blurple()
-            )
-            
-            info_embed.add_field(
-                name="📖 Help & Info",
-                value=(
-                    "**Help:** `/help`\n"
-                    "View command categories and descriptions.\n\n"
-                    "**Quick commands:** `!commands`\n"
-                    "Condensed list of all commands.\n\n"
-                    "**Server info:** `/serverinfo`\n"
-                    "View server statistics.\n\n"
-                    "**Bot latency:** `/ping`\n"
-                    "Check if the bot is responsive."
-                ),
-                inline=False
-            )
-            
-            await channel.send(embed=info_embed)
-            embeds_posted += 1
-            
-            # =====================
-            # ADMIN COMMANDS
+            # 1. ADMIN COMMANDS (moved to first)
             # =====================
             admin_embed = discord.Embed(
                 title="🔧 Admin Commands",
@@ -492,7 +136,7 @@ class CommandGuideCog(commands.Cog):
             embeds_posted += 1
             
             # =====================
-            # MYMADDEN BOT COMMANDS
+            # 2. MYMADDEN BOT COMMANDS (Part 1)
             # =====================
             mymadden_embed1 = discord.Embed(
                 title="🏈 MyMadden Bot Commands",
@@ -548,7 +192,7 @@ class CommandGuideCog(commands.Cog):
             embeds_posted += 1
             
             # =====================
-            # MYMADDEN COMMANDS PART 2
+            # 3. MYMADDEN COMMANDS PART 2
             # =====================
             mymadden_embed2 = discord.Embed(
                 title="🏈 MyMadden Bot Commands (Continued)",
@@ -616,7 +260,345 @@ class CommandGuideCog(commands.Cog):
             embeds_posted += 1
             
             # =====================
-            # MYMADDEN INTEGRATION
+            # 4. WAGERS SECTION
+            # =====================
+            wager_embed = discord.Embed(
+                title="🎰 Making Wagers",
+                description="Create and manage wagers with other league members on any game.",
+                color=discord.Color.purple()
+            )
+            
+            wager_embed.add_field(
+                name="📝 Creating a Wager",
+                value=(
+                    "**Command:** `/wager`\n\n"
+                    "**Parameters:**\n"
+                    "• `opponent` - The person you want to bet against\n"
+                    "• `amount` - The wager amount (e.g., $5, $10)\n"
+                    "• `your_pick` - The team YOU think will win\n"
+                    "• `opponent_pick` - The team your opponent gets\n"
+                    "• `week` - The week number of the game\n"
+                    "• `season` - The season number (optional)\n\n"
+                    "**Example:** `/wager @JohnDoe 10 KC BUF 15`\n"
+                    "*You bet $10 that KC beats BUF in Week 15*"
+                ),
+                inline=False
+            )
+            
+            wager_embed.add_field(
+                name="✅ Accepting/Declining Wagers",
+                value=(
+                    "When someone creates a wager with you, you'll be notified.\n\n"
+                    "**Accept:** `/acceptwager wager_id`\n"
+                    "**Decline:** `/declinewager wager_id`\n\n"
+                    "*The wager ID is shown in the notification*"
+                ),
+                inline=False
+            )
+            
+            wager_embed.add_field(
+                name="📋 Viewing Your Wagers",
+                value=(
+                    "**Your wagers:** `/mywagers`\n"
+                    "Shows all your pending, active, and completed wagers.\n\n"
+                    "**Pending wagers:** `/pendingwagers`\n"
+                    "Shows wagers waiting for game results.\n\n"
+                    "**Leaderboard:** `/wagerboard`\n"
+                    "See who's winning and losing the most in wagers."
+                ),
+                inline=False
+            )
+            
+            wager_embed.add_field(
+                name="🏆 Settling Wagers",
+                value=(
+                    "**Auto-Settlement:** Wagers are automatically settled when "
+                    "game scores are posted in #scores by MyMadden bot.\n\n"
+                    "**Manual Claim:** `/wagerwin wager_id winning_team`\n"
+                    "Claim victory if auto-settlement didn't trigger.\n\n"
+                    "**Check Score:** `/checkscore away_team home_team week`\n"
+                    "Manually check a game result from MyMadden website."
+                ),
+                inline=False
+            )
+            
+            wager_embed.add_field(
+                name="💵 Marking Wagers Paid",
+                value=(
+                    "**Command:** `/markwagerpaid wager_id`\n\n"
+                    "After paying the winner, use this command to mark it complete. "
+                    "Only the winner can confirm payment received."
+                ),
+                inline=False
+            )
+            
+            wager_embed.add_field(
+                name="❌ Canceling Wagers",
+                value=(
+                    "**Command:** `/cancelwager wager_id`\n\n"
+                    "Cancel a wager you created before it's accepted."
+                ),
+                inline=False
+            )
+            
+            await channel.send(embed=wager_embed)
+            embeds_posted += 1
+            
+            # =====================
+            # 5. SEASON END PAYOUTS
+            # =====================
+            payout_embed = discord.Embed(
+                title="💰 Season End Payouts",
+                description="Understanding how playoff earnings and payments work.",
+                color=discord.Color.green()
+            )
+            
+            payout_embed.add_field(
+                name="🏆 Playoff Payout Values",
+                value=(
+                    "**Wild Card/Bye Win:** $50\n"
+                    "**Divisional Win:** $100\n"
+                    "**Conference Championship:** $200\n"
+                    "**Super Bowl Win:** $300\n\n"
+                    "*Maximum possible: $650 (winning all rounds)*"
+                ),
+                inline=False
+            )
+            
+            payout_embed.add_field(
+                name="📤 NFC Pot System (Seeds 8-16)",
+                value=(
+                    "NFC Seeds 8-16 pay into the pot:\n\n"
+                    "• **#15, #16:** $100 each → Wildcard Winners\n"
+                    "• **#13, #14:** $100 each → Divisional Winners\n"
+                    "• **#11, #12:** $100 each → Conference Winner\n"
+                    "• **#8, #9, #10:** $100 each → Super Bowl Winner"
+                ),
+                inline=False
+            )
+            
+            payout_embed.add_field(
+                name="🔗 AFC/NFC Seed Pairing (Seeds 1-7)",
+                value=(
+                    "Each NFC playoff seed is paired with the same AFC seed.\n\n"
+                    "**When AFC team earns playoff money:**\n"
+                    "• AFC owner keeps: **20%** of earnings\n"
+                    "• NFC paired owner keeps: **80%** of AFC earnings\n"
+                    "• NFC seed pays their paired AFC seed the 20%\n\n"
+                    "**Example:** AFC #3 wins Divisional ($100)\n"
+                    "→ AFC #3 gets $20, NFC #3 keeps $80, NFC pays AFC $20"
+                ),
+                inline=False
+            )
+            
+            payout_embed.add_field(
+                name="📊 Viewing Payouts",
+                value=(
+                    "**View payout rules:** `/payoutstructure`\n"
+                    "**View seed pairings:** `/viewpairings [season]`\n"
+                    "**League profitability:** `/profitability [season]`\n"
+                    "**Your profitability:** `/myprofit`"
+                ),
+                inline=False
+            )
+            
+            await channel.send(embed=payout_embed)
+            embeds_posted += 1
+            
+            # =====================
+            # 6. PROFITABILITY (moved above registration)
+            # =====================
+            profit_embed = discord.Embed(
+                title="📊 Profitability Tracking",
+                description="Track your franchise's financial performance across seasons.",
+                color=discord.Color.gold()
+            )
+            
+            profit_embed.add_field(
+                name="📈 Viewing Profitability",
+                value=(
+                    "**League rankings:** `/profitability [season]`\n"
+                    "See how everyone ranks in net profit.\n\n"
+                    "**Your breakdown:** `/myprofit`\n"
+                    "Detailed view of your earnings, dues, and wager profits.\n\n"
+                    "**Payout structure:** `/payoutstructure`\n"
+                    "Complete explanation of how payouts work.\n\n"
+                    "**Seed pairings:** `/viewpairings [season]`\n"
+                    "View AFC/NFC seed pairings and earnings."
+                ),
+                inline=False
+            )
+            
+            profit_embed.add_field(
+                name="💡 Understanding Net Profit",
+                value=(
+                    "**Net Profit** = Playoff Earnings - Dues Paid + Wager Profit\n\n"
+                    "• **Playoff Earnings:** Money received from playoff wins\n"
+                    "• **Dues Paid:** Money owed as a lower NFC seed\n"
+                    "• **Wager Profit:** Net from wager wins minus losses"
+                ),
+                inline=False
+            )
+            
+            await channel.send(embed=profit_embed)
+            embeds_posted += 1
+            
+            # =====================
+            # 7. REGISTRATION
+            # =====================
+            reg_embed = discord.Embed(
+                title="📝 Registration",
+                description="Register as a team owner to receive announcements and get your helmet emoji.",
+                color=discord.Color.teal()
+            )
+            
+            reg_embed.add_field(
+                name="✨ Automatic Registration",
+                value=(
+                    "**When an admin assigns you a team role, you are automatically registered!**\n\n"
+                    "You'll receive:\n"
+                    "• A welcome DM confirming your team\n"
+                    "• Your team's helmet emoji added to your name\n"
+                    "• League announcements via DM\n\n"
+                    "*No action needed - it's all automatic!*"
+                ),
+                inline=False
+            )
+            
+            reg_embed.add_field(
+                name="🏈 Manual Registration",
+                value=(
+                    "**Command:** `/register`\n\n"
+                    "If you already have a team role but weren't auto-registered, "
+                    "run this command to register yourself."
+                ),
+                inline=False
+            )
+            
+            reg_embed.add_field(
+                name="🚪 Unregistering",
+                value=(
+                    "**Command:** `/unregister`\n\n"
+                    "Remove yourself from the team owner list."
+                ),
+                inline=False
+            )
+            
+            await channel.send(embed=reg_embed)
+            embeds_posted += 1
+            
+            # =====================
+            # 8. PAYMENTS & DUES
+            # =====================
+            payment_embed = discord.Embed(
+                title="💵 Payments & Dues",
+                description="Track who owes you money and who you owe.",
+                color=discord.Color.blue()
+            )
+            
+            payment_embed.add_field(
+                name="👀 Viewing Payments",
+                value=(
+                    "**Your summary:** `/mypayments`\n"
+                    "Complete overview of what you owe and what's owed to you.\n\n"
+                    "**Who owes you:** `/whooowesme`\n"
+                    "See all unpaid debts owed TO you.\n\n"
+                    "**Who you owe:** `/whoiowe`\n"
+                    "See all unpaid debts YOU owe.\n\n"
+                    "**All payments:** `/paymentschedule [season]`\n"
+                    "View all outstanding payments league-wide."
+                ),
+                inline=False
+            )
+            
+            payment_embed.add_field(
+                name="✅ Marking Payments",
+                value=(
+                    "**Command:** `/markpaid debtor creditor amount`\n\n"
+                    "**Parameters:**\n"
+                    "• `debtor` - The person who paid\n"
+                    "• `creditor` - The person who received payment\n"
+                    "• `amount` - The amount paid\n\n"
+                    "**Example:** `/markpaid @JohnDoe @JaneSmith 50`"
+                ),
+                inline=False
+            )
+            
+            payment_embed.add_field(
+                name="🏆 Leaderboards",
+                value=(
+                    "**Top earners:** `/topearners [season]`\n"
+                    "Who's made the most money overall.\n\n"
+                    "**Top losers:** `/toplosers [season]`\n"
+                    "Who's lost the most money overall."
+                ),
+                inline=False
+            )
+            
+            await channel.send(embed=payment_embed)
+            embeds_posted += 1
+            
+            # =====================
+            # 9. FUN COMMANDS
+            # =====================
+            fun_embed = discord.Embed(
+                title="😤 Fun Commands",
+                description="Track who complains the most in the league!",
+                color=discord.Color.orange()
+            )
+            
+            fun_embed.add_field(
+                name="🏆 Whiner Leaderboard",
+                value=(
+                    "**Command:** `/whiner [timeframe]`\n\n"
+                    "See who complains the most! Tracks keywords like:\n"
+                    "*\"bs\", \"rigged\", \"unfair\", \"cheese\", \"glitch\"*, etc.\n\n"
+                    "**Timeframes:** `all`, `week`, `month`, `season`"
+                ),
+                inline=False
+            )
+            
+            fun_embed.add_field(
+                name="📊 Your Stats",
+                value=(
+                    "**Command:** `/mywhines`\n\n"
+                    "See your own complaint statistics."
+                ),
+                inline=False
+            )
+            
+            await channel.send(embed=fun_embed)
+            embeds_posted += 1
+            
+            # =====================
+            # 10. INFO COMMANDS
+            # =====================
+            info_embed = discord.Embed(
+                title="ℹ️ Info Commands",
+                description="General information and help commands.",
+                color=discord.Color.blurple()
+            )
+            
+            info_embed.add_field(
+                name="📖 Help & Info",
+                value=(
+                    "**Help:** `/help`\n"
+                    "View command categories and descriptions.\n\n"
+                    "**Quick commands:** `!commands`\n"
+                    "Condensed list of all commands.\n\n"
+                    "**Server info:** `/serverinfo`\n"
+                    "View server statistics.\n\n"
+                    "**Bot latency:** `/ping`\n"
+                    "Check if the bot is responsive."
+                ),
+                inline=False
+            )
+            
+            await channel.send(embed=info_embed)
+            embeds_posted += 1
+            
+            # =====================
+            # 11. MYMADDEN INTEGRATION
             # =====================
             integration_embed = discord.Embed(
                 title="🔗 MyMadden + Mistress LIV Integration",
