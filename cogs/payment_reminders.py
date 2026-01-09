@@ -208,7 +208,7 @@ class PaymentRemindersCog(commands.Cog):
             
             embed.add_field(
                 name="How to Pay",
-                value="Use `/paywager <wager_id>` after sending payment to mark it as paid.\nUse `/mywagers` to see all your wagers.",
+                value="After paying, tell the winner to use `/paid` or `/paid @you` to confirm receipt.\nUse `/mywagers` to see all your wagers.",
                 inline=False
             )
             

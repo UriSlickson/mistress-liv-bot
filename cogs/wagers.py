@@ -33,6 +33,71 @@ TEAM_NAMES = {
 }
 
 
+class WagerPaidSelect(discord.ui.Select):
+    """Dropdown select for choosing which wager to mark as paid."""
+    
+    def __init__(self, options, db_path, guild):
+        super().__init__(
+            placeholder="Select a wager to mark as paid...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+        self.db_path = db_path
+        self.guild = guild
+    
+    async def callback(self, interaction: discord.Interaction):
+        wager_id = int(self.values[0])
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT wager_id, home_user_id, away_user_id, amount, winner_user_id,
+                   home_team_id, away_team_id, season_year, week
+            FROM wagers WHERE wager_id = ?
+        ''', (wager_id,))
+        
+        wager = cursor.fetchone()
+        
+        if not wager:
+            conn.close()
+            await interaction.response.send_message("❌ Wager not found!", ephemeral=True)
+            return
+        
+        wager_id, home_user, away_user, amount, winner, home_team, away_team, season, week = wager
+        
+        cursor.execute('UPDATE wagers SET is_paid = 1 WHERE wager_id = ?', (wager_id,))
+        conn.commit()
+        conn.close()
+        
+        loser_id = away_user if winner == home_user else home_user
+        loser_member = self.guild.get_member(loser_id)
+        loser_name = loser_member.display_name if loser_member else f"User {loser_id}"
+        
+        away_name = TEAM_NAMES.get(away_team, away_team)
+        home_name = TEAM_NAMES.get(home_team, home_team)
+        
+        embed = discord.Embed(
+            title="💰 Wager Paid!",
+            description=f"Payment confirmed from **{loser_name}**!",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="💵 Amount", value=f"${amount:.2f}", inline=True)
+        embed.add_field(name="🏈 Game", value=f"{away_name} @ {home_name}", inline=True)
+        embed.add_field(name="📅 Week", value=f"Season {season}, Week {week}", inline=True)
+        
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
+class WagerPaidSelectView(discord.ui.View):
+    """View containing the wager selection dropdown."""
+    
+    def __init__(self, options, db_path, guild):
+        super().__init__(timeout=60)
+        self.add_item(WagerPaidSelect(options, db_path, guild))
+
+
 class WagersCog(commands.Cog):
     """Cog for managing wagers between league members."""
     
@@ -610,10 +675,115 @@ class WagersCog(commands.Cog):
         
         await interaction.followup.send(embed=embed)
     
-    @app_commands.command(name="markwagerpaid", description="Mark a wager as paid (winner confirms)")
+    @app_commands.command(name="paid", description="Mark a wager as paid - select by opponent")
+    @app_commands.describe(opponent="The person who paid you (optional - shows all if not specified)")
+    async def paid(self, interaction: discord.Interaction, opponent: discord.Member = None):
+        """Mark a wager as paid using opponent selection instead of wager ID."""
+        await interaction.response.defer()
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Get all unpaid wagers where this user is the winner
+        if opponent:
+            # Filter by specific opponent
+            cursor.execute('''
+                SELECT wager_id, home_user_id, away_user_id, amount, winner_user_id,
+                       home_team_id, away_team_id, season_year, week
+                FROM wagers 
+                WHERE winner_user_id = ? 
+                  AND (is_paid = 0 OR is_paid IS NULL)
+                  AND (home_user_id = ? OR away_user_id = ?)
+                ORDER BY season_year DESC, week DESC
+            ''', (interaction.user.id, opponent.id, opponent.id))
+        else:
+            # Get all unpaid wagers
+            cursor.execute('''
+                SELECT wager_id, home_user_id, away_user_id, amount, winner_user_id,
+                       home_team_id, away_team_id, season_year, week
+                FROM wagers 
+                WHERE winner_user_id = ? 
+                  AND (is_paid = 0 OR is_paid IS NULL)
+                ORDER BY season_year DESC, week DESC
+            ''', (interaction.user.id,))
+        
+        wagers = cursor.fetchall()
+        conn.close()
+        
+        if not wagers:
+            if opponent:
+                await interaction.followup.send(f"✅ No unpaid wagers from {opponent.display_name}!", ephemeral=True)
+            else:
+                await interaction.followup.send("✅ You have no unpaid wagers to collect!", ephemeral=True)
+            return
+        
+        # If only one wager, mark it as paid directly
+        if len(wagers) == 1:
+            wager = wagers[0]
+            wager_id, home_user, away_user, amount, winner, home_team, away_team, season, week = wager
+            loser_id = away_user if winner == home_user else home_user
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('UPDATE wagers SET is_paid = 1 WHERE wager_id = ?', (wager_id,))
+            conn.commit()
+            conn.close()
+            
+            loser_member = interaction.guild.get_member(loser_id)
+            loser_name = loser_member.display_name if loser_member else f"User {loser_id}"
+            away_name = TEAM_NAMES.get(away_team, away_team)
+            home_name = TEAM_NAMES.get(home_team, home_team)
+            
+            embed = discord.Embed(
+                title="💰 Wager Paid!",
+                description=f"Payment confirmed from **{loser_name}**!",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="💵 Amount", value=f"${amount:.2f}", inline=True)
+            embed.add_field(name="🏈 Game", value=f"{away_name} @ {home_name}", inline=True)
+            embed.add_field(name="📅 Week", value=f"Season {season}, Week {week}", inline=True)
+            
+            await interaction.followup.send(embed=embed)
+            return
+        
+        # Multiple wagers - show selection dropdown
+        embed = discord.Embed(
+            title="💵 Select Wager to Mark as Paid",
+            description="You have multiple unpaid wagers. Select one from the dropdown below:",
+            color=discord.Color.gold()
+        )
+        
+        options = []
+        for w in wagers[:25]:  # Discord limit
+            wager_id, home_user, away_user, amount, winner, home_team, away_team, season, week = w
+            loser_id = away_user if winner == home_user else home_user
+            loser_member = interaction.guild.get_member(loser_id)
+            loser_name = loser_member.display_name if loser_member else f"User {loser_id}"
+            away_name = TEAM_NAMES.get(away_team, away_team)
+            home_name = TEAM_NAMES.get(home_team, home_team)
+            
+            label = f"${amount:.2f} from {loser_name[:20]}"
+            description = f"{away_name} @ {home_name} - Wk {week}"
+            
+            options.append(discord.SelectOption(
+                label=label[:100],
+                description=description[:100],
+                value=str(wager_id)
+            ))
+            
+            embed.add_field(
+                name=f"${amount:.2f} from {loser_name}",
+                value=f"{away_name} @ {home_name} (Week {week})",
+                inline=True
+            )
+        
+        view = WagerPaidSelectView(options, self.db_path, interaction.guild)
+        await interaction.followup.send(embed=embed, view=view)
+    
+    @app_commands.command(name="markwagerpaid", description="[Legacy] Mark a wager as paid by ID")
     @app_commands.describe(wager_id="The ID of the wager to mark as paid")
     async def markwagerpaid(self, interaction: discord.Interaction, wager_id: int):
-        """Mark a wager as paid after receiving payment."""
+        """Legacy command - Mark a wager as paid after receiving payment."""
         await interaction.response.defer()
         
         conn = sqlite3.connect(self.db_path)
@@ -663,7 +833,7 @@ class WagersCog(commands.Cog):
         
         embed = discord.Embed(
             title="💰 Wager Paid!",
-            description=f"Wager #{wager_id} has been marked as paid!",
+            description=f"Payment confirmed from {loser_mention}!",
             color=discord.Color.green()
         )
         embed.add_field(name="💵 Amount", value=f"${amount:.2f}", inline=True)
@@ -842,7 +1012,7 @@ class WagersCog(commands.Cog):
         
         embed = discord.Embed(
             title=f"💵 {interaction.user.display_name}'s Unpaid Wagers",
-            description="Use `/markwagerpaid <wager_id>` to mark a wager as paid after receiving payment.",
+            description="Use `/paid` or `/paid @opponent` to mark wagers as paid after receiving payment.",
             color=discord.Color.gold()
         )
         
@@ -856,7 +1026,7 @@ class WagersCog(commands.Cog):
                 loser_name = loser.display_name if loser else f"<@{loser_id}>"
                 away_name = TEAM_NAMES.get(away_team, away_team)
                 home_name = TEAM_NAMES.get(home_team, home_team)
-                lines.append(f"**ID: {wager_id}** | ${amount:.2f} | {away_name}@{home_name} Wk{week}\n  Owed by: {loser_name}")
+                lines.append(f"💰 **${amount:.2f}** from **{loser_name}**\n   {away_name} @ {home_name} (Week {week})")
             
             embed.add_field(
                 name=f"✅ You Won - Awaiting Payment ({len(won_unpaid)})",
@@ -873,7 +1043,7 @@ class WagersCog(commands.Cog):
                 winner_name = winner_member.display_name if winner_member else f"<@{winner}>"
                 away_name = TEAM_NAMES.get(away_team, away_team)
                 home_name = TEAM_NAMES.get(home_team, home_team)
-                lines.append(f"**ID: {wager_id}** | ${amount:.2f} | {away_name}@{home_name} Wk{week}\n  You owe: {winner_name}")
+                lines.append(f"💸 **${amount:.2f}** to **{winner_name}**\n   {away_name} @ {home_name} (Week {week})")
             
             embed.add_field(
                 name=f"❌ You Lost - You Owe ({len(lost_unpaid)})",
@@ -881,7 +1051,7 @@ class WagersCog(commands.Cog):
                 inline=False
             )
         
-        embed.set_footer(text="Winner uses /markwagerpaid <ID> after receiving payment")
+        embed.set_footer(text="Winner uses /paid or /paid @opponent after receiving payment")
         
         await interaction.followup.send(embed=embed)
 
