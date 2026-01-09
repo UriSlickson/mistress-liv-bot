@@ -802,6 +802,89 @@ class WagersCog(commands.Cog):
         
         await interaction.followup.send(embed=embed)
 
+    @app_commands.command(name="unpaidwagers", description="View your unpaid wagers (won but not marked paid)")
+    async def unpaidwagers(self, interaction: discord.Interaction):
+        """View wagers you've won that haven't been marked as paid yet."""
+        await interaction.response.defer()
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Get wagers where user won but not paid
+        cursor.execute('''
+            SELECT wager_id, season_year, week, home_team_id, away_team_id, 
+                   home_user_id, away_user_id, amount, winner_user_id
+            FROM wagers 
+            WHERE winner_user_id = ? AND (is_paid = 0 OR is_paid IS NULL)
+            ORDER BY season_year DESC, week DESC
+        ''', (interaction.user.id,))
+        
+        won_unpaid = cursor.fetchall()
+        
+        # Get wagers where user lost but not paid
+        cursor.execute('''
+            SELECT wager_id, season_year, week, home_team_id, away_team_id, 
+                   home_user_id, away_user_id, amount, winner_user_id
+            FROM wagers 
+            WHERE (home_user_id = ? OR away_user_id = ?)
+            AND winner_user_id IS NOT NULL
+            AND winner_user_id != ?
+            AND (is_paid = 0 OR is_paid IS NULL)
+            ORDER BY season_year DESC, week DESC
+        ''', (interaction.user.id, interaction.user.id, interaction.user.id))
+        
+        lost_unpaid = cursor.fetchall()
+        conn.close()
+        
+        if not won_unpaid and not lost_unpaid:
+            await interaction.followup.send("✅ You have no unpaid wagers! All settled up.")
+            return
+        
+        embed = discord.Embed(
+            title=f"💵 {interaction.user.display_name}'s Unpaid Wagers",
+            description="Use `/markwagerpaid <wager_id>` to mark a wager as paid after receiving payment.",
+            color=discord.Color.gold()
+        )
+        
+        # Wagers you won (waiting for payment)
+        if won_unpaid:
+            lines = []
+            for w in won_unpaid[:10]:
+                wager_id, season, week, home_team, away_team, home_user, away_user, amount, winner = w
+                loser_id = away_user if winner == home_user else home_user
+                loser = interaction.guild.get_member(loser_id)
+                loser_name = loser.display_name if loser else f"<@{loser_id}>"
+                away_name = TEAM_NAMES.get(away_team, away_team)
+                home_name = TEAM_NAMES.get(home_team, home_team)
+                lines.append(f"**ID: {wager_id}** | ${amount:.2f} | {away_name}@{home_name} Wk{week}\n  Owed by: {loser_name}")
+            
+            embed.add_field(
+                name=f"✅ You Won - Awaiting Payment ({len(won_unpaid)})",
+                value="\n\n".join(lines) if lines else "None",
+                inline=False
+            )
+        
+        # Wagers you lost (you owe)
+        if lost_unpaid:
+            lines = []
+            for w in lost_unpaid[:10]:
+                wager_id, season, week, home_team, away_team, home_user, away_user, amount, winner = w
+                winner_member = interaction.guild.get_member(winner)
+                winner_name = winner_member.display_name if winner_member else f"<@{winner}>"
+                away_name = TEAM_NAMES.get(away_team, away_team)
+                home_name = TEAM_NAMES.get(home_team, home_team)
+                lines.append(f"**ID: {wager_id}** | ${amount:.2f} | {away_name}@{home_name} Wk{week}\n  You owe: {winner_name}")
+            
+            embed.add_field(
+                name=f"❌ You Lost - You Owe ({len(lost_unpaid)})",
+                value="\n\n".join(lines) if lines else "None",
+                inline=False
+            )
+        
+        embed.set_footer(text="Winner uses /markwagerpaid <ID> after receiving payment")
+        
+        await interaction.followup.send(embed=embed)
+
 
 async def setup(bot):
     await bot.add_cog(WagersCog(bot))
