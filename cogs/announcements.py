@@ -146,11 +146,22 @@ class AnnouncementsCog(commands.Cog):
         else:
             results.append("⚠️ #townsquare channel not found")
         
+        # Post to #announcements as well
+        announcements_channel = discord.utils.get(guild.text_channels, name='announcements')
+        if announcements_channel:
+            try:
+                await announcements_channel.send(embed=embed)
+                results.append(f"✅ Posted to {announcements_channel.mention}")
+            except Exception as e:
+                results.append(f"❌ Failed to post to #announcements: {e}")
+        else:
+            results.append("⚠️ #announcements channel not found")
+        
         # Get registered team owners from database
         registered_owners = self.get_registered_owners()
         
         dm_embed = discord.Embed(
-            title="📢 Mistress LIV - Offseason Announcement",
+            title="📢 Mistress LIV - Announcement",
             description=message,
             color=discord.Color.gold(),
             timestamp=datetime.utcnow()
