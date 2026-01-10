@@ -759,6 +759,71 @@ class ProfitabilityCog(commands.Cog):
             ephemeral=True
         )
     
+    @app_commands.command(name="clearseason", description="[Admin] Clear ALL data for a season (payments, playoff results, seedings)")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        season="Season number to clear all data for",
+        confirm="Type 'CLEARALL' to proceed - this clears EVERYTHING for the season"
+    )
+    async def clear_season(self, interaction: discord.Interaction, season: int, confirm: str):
+        """Clear all data for a season - payments, playoff results, and seedings."""
+        if confirm != "CLEARALL":
+            await interaction.response.send_message(
+                f"⚠️ **WARNING: This will clear ALL data for Season {season}!**\n\n"
+                f"This includes:\n"
+                f"• All payments (paid and unpaid)\n"
+                f"• All playoff results\n"
+                f"• All seedings (AFC and NFC)\n"
+                f"• All profitability records\n\n"
+                f"To proceed, type `CLEARALL` in the confirm field.\n"
+                f"**This action cannot be undone!**",
+                ephemeral=True
+            )
+            return
+        
+        await interaction.response.defer(thinking=True)
+        
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        results = []
+        
+        # Clear payments
+        cursor.execute('DELETE FROM payments WHERE season_year = ?', (season,))
+        results.append(f"💰 Payments: {cursor.rowcount} deleted")
+        
+        # Clear playoff results
+        cursor.execute('DELETE FROM playoff_results WHERE season = ?', (season,))
+        results.append(f"🏆 Playoff results: {cursor.rowcount} deleted")
+        
+        # Clear seedings
+        cursor.execute('DELETE FROM season_standings WHERE season = ?', (season,))
+        results.append(f"🏈 Seedings: {cursor.rowcount} deleted")
+        
+        # Clear profitability
+        cursor.execute('DELETE FROM franchise_profitability WHERE season = ?', (season,))
+        results.append(f"📊 Profitability: {cursor.rowcount} deleted")
+        
+        conn.commit()
+        conn.close()
+        
+        embed = discord.Embed(
+            title=f"🗑️ Season {season} Cleared",
+            description="All data for this season has been deleted.",
+            color=discord.Color.red(),
+            timestamp=datetime.utcnow()
+        )
+        
+        embed.add_field(
+            name="Deleted Records",
+            value="\n".join(results),
+            inline=False
+        )
+        
+        embed.set_footer(text="This action cannot be undone")
+        
+        await interaction.followup.send(embed=embed)
+    
     @app_commands.command(name="postpayments", description="[Admin] Post payment summaries to GM division channels")
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(season="Season number to post payments for")
