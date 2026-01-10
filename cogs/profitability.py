@@ -216,7 +216,9 @@ class ProfitabilityCog(commands.Cog):
         winner: discord.Member,
         conference: Optional[str] = None
     ):
-        """Record a playoff round winner."""
+        """Record a playoff round winner. Auto-generates payments after Super Bowl."""
+        await interaction.response.defer(thinking=True)
+        
         conn = self.get_db_connection()
         cursor = conn.cursor()
         
@@ -249,10 +251,47 @@ class ProfitabilityCog(commands.Cog):
         }
         
         conf_str = f" ({conference})" if conference else ""
-        await interaction.response.send_message(
-            f"✅ Recorded {winner.display_name}{conf_str} as {round_names[round]} winner for Season {season}",
-            ephemeral=True
-        )
+        
+        # If this is the Super Bowl winner, auto-generate payments
+        if round == 'superbowl':
+            await interaction.followup.send(
+                f"🏆 **{winner.display_name}** wins the Super Bowl for Season {season}!\n\n"
+                f"💰 Auto-generating season payouts...",
+                ephemeral=False
+            )
+            
+            # Auto-generate payments
+            result = await self._auto_generate_payments(interaction.guild, season)
+            
+            if result['success']:
+                # Find and post to #payouts channel
+                payouts_channel = await self._get_payouts_channel(interaction.guild)
+                if payouts_channel:
+                    await self._post_payments_to_channel(payouts_channel, season, interaction.guild)
+                    await interaction.followup.send(
+                        f"✅ Season {season} payouts generated and posted to {payouts_channel.mention}!\n"
+                        f"• {result['payments_created']} new payments created\n"
+                        f"• Prior unpaid payments preserved",
+                        ephemeral=False
+                    )
+                else:
+                    await interaction.followup.send(
+                        f"✅ Season {season} payouts generated!\n"
+                        f"• {result['payments_created']} new payments created\n"
+                        f"⚠️ No #payouts channel found - use `/createpayouts` to create one\n"
+                        f"• Use `/postpayments {season}` to post manually",
+                        ephemeral=False
+                    )
+            else:
+                await interaction.followup.send(
+                    f"⚠️ Recorded Super Bowl winner but payment generation had issues:\n{result['error']}",
+                    ephemeral=False
+                )
+        else:
+            await interaction.followup.send(
+                f"✅ Recorded {winner.display_name}{conf_str} as {round_names[round]} winner for Season {season}",
+                ephemeral=False
+            )
     
     def _calculate_afc_earnings(self, cursor, season: int) -> Dict[int, Dict]:
         """
@@ -643,17 +682,20 @@ class ProfitabilityCog(commands.Cog):
                 VALUES (?, ?, ?, ?, ?, ?)
             ''', (user_id, season, playoff_earnings, dues_paid, wager_profit, net_profit))
     
-    @app_commands.command(name="clearpayments", description="[Admin] Clear all payments for a season")
+    @app_commands.command(name="clearpayments", description="[Admin] Clear payment records for a season")
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         season="Season number to clear payments for",
-        confirm="Type 'CONFIRM' to proceed"
+        confirm="Type 'CONFIRM' to proceed (or 'FORCEALL' to include unpaid)",
+        include_unpaid="Also delete unpaid payments (default: False, preserves unpaid)"
     )
-    async def clear_payments(self, interaction: discord.Interaction, season: int, confirm: str):
-        """Clear all payment records for a season."""
-        if confirm != "CONFIRM":
+    async def clear_payments(self, interaction: discord.Interaction, season: int, confirm: str, include_unpaid: bool = False):
+        """Clear payment records for a season. By default preserves unpaid payments."""
+        if confirm not in ["CONFIRM", "FORCEALL"]:
             await interaction.response.send_message(
                 "⚠️ To clear payments, you must type `CONFIRM` in the confirm field.\n"
+                "This will only clear PAID payments for the season.\n\n"
+                "To also clear unpaid payments, type `FORCEALL` instead.\n"
                 "This action cannot be undone!",
                 ephemeral=True
             )
@@ -662,18 +704,30 @@ class ProfitabilityCog(commands.Cog):
         conn = self.get_db_connection()
         cursor = conn.cursor()
         
-        cursor.execute('DELETE FROM payments WHERE season_year = ?', (season,))
-        deleted = cursor.rowcount
+        # Check for unpaid payments first
+        cursor.execute('SELECT COUNT(*) FROM payments WHERE season_year = ? AND is_paid = 0', (season,))
+        unpaid_count = cursor.fetchone()[0]
+        
+        if confirm == "FORCEALL" or include_unpaid:
+            # Delete ALL payments for the season
+            cursor.execute('DELETE FROM payments WHERE season_year = ?', (season,))
+            deleted = cursor.rowcount
+            message = f"✅ Cleared {deleted} payment records for Season {season} (including {unpaid_count} unpaid)"
+        else:
+            # Only delete PAID payments, preserve unpaid
+            cursor.execute('DELETE FROM payments WHERE season_year = ? AND is_paid = 1', (season,))
+            deleted = cursor.rowcount
+            if unpaid_count > 0:
+                message = f"✅ Cleared {deleted} PAID payment records for Season {season}\n⚠️ Preserved {unpaid_count} unpaid payments"
+            else:
+                message = f"✅ Cleared {deleted} payment records for Season {season}"
         
         cursor.execute('DELETE FROM franchise_profitability WHERE season = ?', (season,))
         
         conn.commit()
         conn.close()
         
-        await interaction.response.send_message(
-            f"✅ Cleared {deleted} payment records for Season {season}",
-            ephemeral=True
-        )
+        await interaction.response.send_message(message, ephemeral=True)
     
     @app_commands.command(name="clearplayoffresults", description="[Admin] Clear playoff results for a season")
     @app_commands.default_permissions(administrator=True)
@@ -1004,6 +1058,243 @@ class ProfitabilityCog(commands.Cog):
         embed.set_footer(text="Use /viewpairings to see current season pairings")
         
         await interaction.response.send_message(embed=embed)
+    
+    async def _get_payouts_channel(self, guild):
+        """Find the #payouts channel (or fallbacks)."""
+        for channel in guild.text_channels:
+            if channel.name.lower() in ['payouts', 'payout', 'finances']:
+                return channel
+        return None
+    
+    async def _auto_generate_payments(self, guild, season: int) -> Dict:
+        """
+        Auto-generate payments for a season.
+        Preserves unpaid payments from prior seasons.
+        Returns dict with success status and details.
+        """
+        try:
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+            
+            payments_created = 0
+            errors = []
+            
+            # Check if payments already exist for this season
+            cursor.execute('SELECT COUNT(*) FROM payments WHERE season_year = ?', (season,))
+            existing_count = cursor.fetchone()[0]
+            
+            if existing_count > 0:
+                conn.close()
+                return {
+                    'success': True,
+                    'payments_created': 0,
+                    'message': f'Payments already exist for Season {season}. Use /clearpayments to regenerate.'
+                }
+            
+            # ============================================
+            # PART 1: NFC Seeds 8-16 Payout System
+            # ============================================
+            
+            cursor.execute('''
+                SELECT seed, user_discord_id, team_id 
+                FROM season_standings 
+                WHERE season = ? AND conference = 'NFC' AND seed >= 8
+                ORDER BY seed
+            ''', (season,))
+            nfc_payers = cursor.fetchall()
+            
+            cursor.execute('''
+                SELECT round, winner_discord_id, winner_team_id
+                FROM playoff_results
+                WHERE season = ? AND conference = 'NFC'
+            ''', (season,))
+            nfc_playoff_results = cursor.fetchall()
+            
+            nfc_winners_by_round = {
+                'wildcard': [],
+                'divisional': [],
+                'conference': [],
+                'superbowl': []
+            }
+            for result in nfc_playoff_results:
+                round_name, winner_id, team_id = result
+                nfc_winners_by_round[round_name].append({'user_id': winner_id, 'team_id': team_id})
+            
+            for seed, payer_id, payer_team in nfc_payers:
+                if payer_id is None or seed not in NFC_PAYER_STRUCTURE:
+                    continue
+                    
+                payment_info = NFC_PAYER_STRUCTURE[seed]
+                target_round = payment_info['round']
+                total_amount = payment_info['amount']
+                
+                round_winners = nfc_winners_by_round.get(target_round, [])
+                if not round_winners:
+                    continue
+                
+                amount_per_winner = total_amount / len(round_winners)
+                
+                for winner in round_winners:
+                    if winner['user_id'] == payer_id:
+                        continue
+                        
+                    cursor.execute('''
+                        INSERT INTO payments (season_year, payer_discord_id, payee_discord_id, amount, reason, is_paid)
+                        VALUES (?, ?, ?, ?, ?, 0)
+                    ''', (season, payer_id, winner['user_id'], amount_per_winner, 
+                          f"Season {season} - NFC #{seed} to {target_round} winner"))
+                    payments_created += 1
+            
+            # ============================================
+            # PART 2: AFC/NFC Seed Pairing System
+            # ============================================
+            
+            afc_earnings = self._calculate_afc_earnings(cursor, season)
+            
+            cursor.execute('''
+                SELECT seed, user_discord_id, team_id 
+                FROM season_standings 
+                WHERE season = ? AND conference = 'NFC' AND seed <= 7
+                ORDER BY seed
+            ''', (season,))
+            nfc_playoff_seeds = cursor.fetchall()
+            
+            for nfc_seed, nfc_user_id, nfc_team_id in nfc_playoff_seeds:
+                if nfc_user_id is None:
+                    continue
+                
+                afc_data = afc_earnings.get(nfc_seed)
+                if not afc_data or afc_data['user_id'] is None:
+                    continue
+                
+                afc_user_id = afc_data['user_id']
+                afc_total_earnings = afc_data['total_earnings']
+                
+                if afc_total_earnings <= 0:
+                    continue
+                
+                afc_keeps = afc_total_earnings * AFC_RETENTION_RATE
+                
+                if afc_keeps > 0 and nfc_user_id != afc_user_id:
+                    rounds_str = ", ".join(afc_data['rounds_won'])
+                    cursor.execute('''
+                        INSERT INTO payments (season_year, payer_discord_id, payee_discord_id, amount, reason, is_paid)
+                        VALUES (?, ?, ?, ?, ?, 0)
+                    ''', (season, nfc_user_id, afc_user_id, afc_keeps,
+                          f"Season {season} - NFC #{nfc_seed} pays AFC #{nfc_seed} (20% of AFC earnings: {rounds_str})"))
+                    payments_created += 1
+            
+            # Update profitability records
+            self._update_profitability(cursor, season)
+            
+            conn.commit()
+            conn.close()
+            
+            return {
+                'success': True,
+                'payments_created': payments_created,
+                'message': f'Generated {payments_created} payments for Season {season}'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error auto-generating payments: {e}")
+            return {
+                'success': False,
+                'payments_created': 0,
+                'error': str(e)
+            }
+    
+    async def _post_payments_to_channel(self, channel, season: int, guild):
+        """Post payment summary to the payouts channel."""
+        try:
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+            
+            # Get all payments for this season
+            cursor.execute('''
+                SELECT payer_discord_id, payee_discord_id, amount, reason, is_paid
+                FROM payments WHERE season_year = ?
+                ORDER BY amount DESC
+            ''', (season,))
+            payments = cursor.fetchall()
+            conn.close()
+            
+            if not payments:
+                return
+            
+            # Create summary embed
+            embed = discord.Embed(
+                title=f"🏆 Season {season} Payouts Generated!",
+                description=(
+                    f"The Super Bowl has concluded and all payouts have been calculated.\n\n"
+                    f"**Total Payments:** {len(payments)}\n"
+                    f"**Total Amount:** ${sum(p[2] for p in payments):.2f}"
+                ),
+                color=discord.Color.gold(),
+                timestamp=datetime.utcnow()
+            )
+            
+            # Group payments by payer
+            payer_totals = {}
+            for payer_id, payee_id, amount, reason, is_paid in payments:
+                if payer_id not in payer_totals:
+                    payer_totals[payer_id] = {'total': 0, 'payments': []}
+                payer_totals[payer_id]['total'] += amount
+                payer_totals[payer_id]['payments'].append((payee_id, amount, reason))
+            
+            # Add top payers
+            sorted_payers = sorted(payer_totals.items(), key=lambda x: x[1]['total'], reverse=True)[:10]
+            payer_lines = []
+            for payer_id, data in sorted_payers:
+                member = guild.get_member(payer_id)
+                name = member.display_name if member else f"User {payer_id}"
+                payer_lines.append(f"• **{name}**: ${data['total']:.2f}")
+            
+            if payer_lines:
+                embed.add_field(
+                    name="💸 Who Owes (Top 10)",
+                    value="\n".join(payer_lines),
+                    inline=True
+                )
+            
+            # Group by payee (who receives)
+            payee_totals = {}
+            for payer_id, payee_id, amount, reason, is_paid in payments:
+                if payee_id not in payee_totals:
+                    payee_totals[payee_id] = 0
+                payee_totals[payee_id] += amount
+            
+            sorted_payees = sorted(payee_totals.items(), key=lambda x: x[1], reverse=True)[:10]
+            payee_lines = []
+            for payee_id, total in sorted_payees:
+                member = guild.get_member(payee_id)
+                name = member.display_name if member else f"User {payee_id}"
+                payee_lines.append(f"• **{name}**: ${total:.2f}")
+            
+            if payee_lines:
+                embed.add_field(
+                    name="💰 Who Receives (Top 10)",
+                    value="\n".join(payee_lines),
+                    inline=True
+                )
+            
+            embed.add_field(
+                name="📋 Commands",
+                value=(
+                    "`/mypayments` - View your payment info\n"
+                    "`/whoiowe` - See who you owe\n"
+                    "`/whooowesme` - See who owes you\n"
+                    "`/markpaid @user amount` - Mark payment sent"
+                ),
+                inline=False
+            )
+            
+            embed.set_footer(text="Prior season unpaid payments are preserved")
+            
+            await channel.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Error posting payments to channel: {e}")
 
 
 async def setup(bot):

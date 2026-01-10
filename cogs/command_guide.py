@@ -138,7 +138,7 @@ class CommandGuideCog(commands.Cog):
                 name="🔄 Other Admin",
                 value=(
                     "**Reset whiner stats:** `/resetwhiner [user]`\n"
-                    "**Create finances channel:** `/createfinances`"
+                    "**Create payouts channel:** `/createpayouts`"
                 ),
                 inline=False
             )

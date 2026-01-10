@@ -409,26 +409,26 @@ class AdminCog(commands.Cog):
         
         await interaction.response.send_message(embed=embed)
     
-    @app_commands.command(name="createfinances", description="[Admin] Create the finances channel with restricted permissions")
+    @app_commands.command(name="createpayouts", description="[Admin] Create the payouts channel with restricted permissions")
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         category="The category to create the channel in (optional)"
     )
-    async def create_finances_channel(
+    async def create_payouts_channel(
         self,
         interaction: discord.Interaction,
         category: Optional[discord.CategoryChannel] = None
     ):
-        """Create a finances channel where only commands and bot responses are allowed."""
+        """Create a payouts channel where only commands and bot responses are allowed."""
         await interaction.response.defer()
         
         guild = interaction.guild
         
         # Check if channel already exists
-        existing = discord.utils.get(guild.text_channels, name="finances")
+        existing = discord.utils.get(guild.text_channels, name="payouts")
         if existing:
             await interaction.followup.send(
-                f"⚠️ A #finances channel already exists: {existing.mention}",
+                f"⚠️ A #payouts channel already exists: {existing.mention}",
                 ephemeral=True
             )
             return
@@ -465,20 +465,20 @@ class AdminCog(commands.Cog):
         try:
             # Create the channel
             channel = await guild.create_text_channel(
-                name="finances",
+                name="payouts",
                 category=category,
                 overwrites=overwrites,
-                topic="💰 League finances and payment tracking. Use slash commands to interact.",
+                topic="💰 League payouts and payment tracking. Use slash commands to interact.",
                 reason=f"Created by {interaction.user.display_name} via bot command"
             )
             
             # Send welcome message
             welcome_embed = discord.Embed(
-                title="💰 League Finances",
+                title="💰 League Payouts",
                 description=(
-                    "Welcome to the finances channel!\n\n"
+                    "Welcome to the payouts channel!\n\n"
                     "This channel is for tracking league payments, dues, and profitability.\n"
-                    "**Only slash commands and bot responses are allowed here.**\n\n"
+                    "**Payments are automatically generated after the Super Bowl!**\n\n"
                     "**Available Commands:**\n"
                     "• `/mypayments` - View your payment info and balances\n"
                     "• `/setpayment` - Set your payment methods\n"
@@ -509,7 +509,7 @@ class AdminCog(commands.Cog):
                 ephemeral=True
             )
         except Exception as e:
-            logger.error(f"Error creating finances channel: {e}")
+            logger.error(f"Error creating payouts channel: {e}")
             await interaction.followup.send(
                 f"❌ An error occurred: {str(e)}",
                 ephemeral=True
