@@ -54,6 +54,22 @@ AFC_TEAMS = ['BAL', 'BUF', 'CIN', 'CLE', 'DEN', 'HOU', 'IND', 'JAX',
 NFC_TEAMS = ['ARI', 'ATL', 'CAR', 'CHI', 'DAL', 'DET', 'GB', 'LAR',
              'MIN', 'NO', 'NYG', 'PHI', 'SEA', 'SF', 'TB', 'WAS']
 
+# CPU/Open team payout reduction rules
+# When NFC seeds 8-16 have CPU/Open teams, the pot reduces and payouts are adjusted
+# CPU teams are auto-assigned to lowest NFC seeds (16 first, then 15, 14, etc.)
+CPU_PAYOUT_REDUCTION = {
+    # Number of CPU teams: which rounds are affected and how
+    1: {'wildcard': 0.50},  # WC/Bye earnings → $25 each (50% of normal)
+    2: {'wildcard': 0.00},  # No WC/Bye earnings
+    3: {'wildcard': 0.00, 'divisional': 0.50},  # No WC/Bye + Divisional → $50 each
+    4: {'wildcard': 0.00, 'divisional': 0.00},  # No WC/Bye or Divisional
+    5: {'wildcard': 0.00, 'divisional': 0.00, 'conference': 0.50},  # + Conference reduced
+    6: {'wildcard': 0.00, 'divisional': 0.00, 'conference': 0.00},  # No Conference
+    7: {'wildcard': 0.00, 'divisional': 0.00, 'conference': 0.00, 'superbowl': 0.67},  # + SB reduced
+    8: {'wildcard': 0.00, 'divisional': 0.00, 'conference': 0.00, 'superbowl': 0.33},  # SB more reduced
+    9: {'wildcard': 0.00, 'divisional': 0.00, 'conference': 0.00, 'superbowl': 0.00},  # No payouts
+}
+
 # Division channel mapping
 DIVISION_CHANNELS = {
     'AFC East': 'afc-east',
@@ -143,6 +159,46 @@ class ProfitabilityCog(commands.Cog):
         elif team_id and team_id.upper() in NFC_TEAMS:
             return 'NFC'
         return None
+    
+    def _count_cpu_nfc_payers(self, cursor, season: int) -> int:
+        """
+        Count how many NFC seeds 8-16 are CPU/Open teams.
+        CPU teams are identified by:
+        1. is_cpu flag in teams table
+        2. No user_discord_id assigned in season_standings
+        """
+        cpu_count = 0
+        
+        # Get NFC seeds 8-16
+        cursor.execute('''
+            SELECT ss.seed, ss.user_discord_id, ss.team_id, t.is_cpu
+            FROM season_standings ss
+            LEFT JOIN teams t ON ss.team_id = t.team_id
+            WHERE ss.season = ? AND ss.conference = 'NFC' AND ss.seed >= 8 AND ss.seed <= 16
+            ORDER BY ss.seed DESC
+        ''', (season,))
+        nfc_payers = cursor.fetchall()
+        
+        for seed, user_id, team_id, is_cpu in nfc_payers:
+            # Team is CPU if: explicitly marked as CPU OR no user assigned
+            if is_cpu == 1 or user_id is None:
+                cpu_count += 1
+        
+        return cpu_count
+    
+    def _get_payout_multiplier(self, cpu_count: int, round_name: str) -> float:
+        """
+        Get the payout multiplier for a round based on number of CPU teams.
+        Returns 1.0 for full payout, 0.5 for half, 0.0 for no payout.
+        """
+        if cpu_count == 0:
+            return 1.0  # Full payout
+        
+        if cpu_count > 9:
+            cpu_count = 9  # Cap at max defined
+        
+        reduction_rules = CPU_PAYOUT_REDUCTION.get(cpu_count, {})
+        return reduction_rules.get(round_name, 1.0)  # Default to full payout if not specified
     
     @app_commands.command(name="setseeding", description="[Admin] Set NFC/AFC seeding for a season")
     @app_commands.default_permissions(administrator=True)
@@ -355,12 +411,20 @@ class ProfitabilityCog(commands.Cog):
         payments_created = 0
         errors = []
         afc_pairing_payments = 0
+        cpu_teams_skipped = 0
+        
+        # ============================================
+        # PART 0: Count CPU/Open NFC Teams for Payout Reduction
+        # ============================================
+        cpu_count = self._count_cpu_nfc_payers(cursor, season)
+        if cpu_count > 0:
+            logger.info(f"Season {season}: {cpu_count} CPU/Open NFC teams detected - applying payout reduction")
         
         # ============================================
         # PART 1: Existing NFC Seeds 8-16 Payout System
         # ============================================
         
-        # Get NFC standings (seeds 8-16 are payers)
+        # Get NFC standings (seeds 8-16 are payers) with CPU flag
         cursor.execute('''
             SELECT seed, user_discord_id, team_id 
             FROM season_standings 
@@ -389,9 +453,19 @@ class ProfitabilityCog(commands.Cog):
             nfc_winners_by_round[round_name].append({'user_id': winner_id, 'team_id': team_id})
         
         # Generate NFC pot payments (seeds 8-16 pay to playoff winners)
+        # Skip CPU/Open teams - they don't pay
         for seed, payer_id, payer_team in nfc_payers:
-            if payer_id is None:
-                errors.append(f"NFC #{seed} has no user assigned")
+            # Check if this team is CPU/Open
+            cursor.execute('''
+                SELECT t.is_cpu FROM teams t WHERE t.team_id = ?
+            ''', (payer_team,))
+            is_cpu_result = cursor.fetchone()
+            is_cpu = is_cpu_result[0] if is_cpu_result else 0
+            
+            # Skip CPU teams - they pay $0
+            if is_cpu == 1 or payer_id is None:
+                cpu_teams_skipped += 1
+                logger.info(f"Skipping CPU/Open team NFC #{seed} ({payer_team}) - pays $0")
                 continue
                 
             if seed not in NFC_PAYER_STRUCTURE:
@@ -400,6 +474,15 @@ class ProfitabilityCog(commands.Cog):
             payment_info = NFC_PAYER_STRUCTURE[seed]
             target_round = payment_info['round']
             total_amount = payment_info['amount']
+            
+            # Apply payout reduction based on CPU count
+            payout_multiplier = self._get_payout_multiplier(cpu_count, target_round)
+            if payout_multiplier == 0.0:
+                logger.info(f"Skipping {target_round} payout from NFC #{seed} - round eliminated due to CPU teams")
+                continue
+            
+            # Reduce amount if multiplier is less than 1.0
+            total_amount = total_amount * payout_multiplier
             
             # Get winners for this round
             round_winners = nfc_winners_by_round.get(target_round, [])
@@ -496,10 +579,29 @@ class ProfitabilityCog(commands.Cog):
                 f"**Total Payments Created:** {payments_created}\n"
                 f"**NFC Pot Payments:** {payments_created - afc_pairing_payments}\n"
                 f"**AFC/NFC Pairing Payments:** {afc_pairing_payments}\n"
+                f"**CPU/Open Teams Skipped:** {cpu_teams_skipped}\n"
                 f"**Errors:** {len(errors)}"
             ),
             inline=False
         )
+        
+        # Show CPU reduction info if applicable
+        if cpu_count > 0:
+            reduction_info = []
+            for round_name in ['wildcard', 'divisional', 'conference', 'superbowl']:
+                multiplier = self._get_payout_multiplier(cpu_count, round_name)
+                if multiplier < 1.0:
+                    if multiplier == 0.0:
+                        reduction_info.append(f"**{round_name.title()}:** No payouts")
+                    else:
+                        reduction_info.append(f"**{round_name.title()}:** {int(multiplier * 100)}% of normal")
+            
+            if reduction_info:
+                embed.add_field(
+                    name=f"⚠️ CPU Team Payout Reduction ({cpu_count} CPU teams)",
+                    value="\n".join(reduction_info),
+                    inline=False
+                )
         
         # Show AFC earnings breakdown
         if afc_earnings:
