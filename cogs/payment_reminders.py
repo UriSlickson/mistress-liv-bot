@@ -321,9 +321,10 @@ class PaymentRemindersCog(commands.Cog):
         
         await interaction.followup.send("✅ Reminder check complete! Reminders sent where applicable.", ephemeral=True)
     
-    @app_commands.command(name="unpaidwagers", description="Show all unpaid wagers in the league")
-    async def unpaid_wagers(self, interaction: discord.Interaction):
-        """Display all unpaid wagers."""
+    @app_commands.command(name="allunpaidwagers", description="Show all unpaid wagers in the league (admin view)")
+    @app_commands.default_permissions(administrator=True)
+    async def all_unpaid_wagers(self, interaction: discord.Interaction):
+        """Display all unpaid wagers (admin view)."""
         await interaction.response.defer()
         
         unpaid = self.get_unpaid_wagers()
