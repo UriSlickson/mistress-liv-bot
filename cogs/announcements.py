@@ -401,7 +401,7 @@ class AnnouncementsCog(commands.Cog):
         )
 
     
-    @app_commands.command(name="clearchannel", description="[Admin] Delete all messages in a channel to start fresh")
+    @app_commands.command(name="clearchannel", description="[Admin] Delete all messages in a channel (type CONFIRM)")
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         channel="The channel to clear (defaults to current channel)",

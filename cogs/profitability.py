@@ -682,7 +682,7 @@ class ProfitabilityCog(commands.Cog):
                 VALUES (?, ?, ?, ?, ?, ?)
             ''', (user_id, season, playoff_earnings, dues_paid, wager_profit, net_profit))
     
-    @app_commands.command(name="clearpayments", description="[Admin] Clear payment records for a season")
+    @app_commands.command(name="clearpayments", description="[Admin] Clear payment records for a season (type CONFIRM or FORCEALL)")
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         season="Season number to clear payments for",
@@ -729,7 +729,7 @@ class ProfitabilityCog(commands.Cog):
         
         await interaction.response.send_message(message, ephemeral=True)
     
-    @app_commands.command(name="clearplayoffresults", description="[Admin] Clear playoff results for a season")
+    @app_commands.command(name="clearplayoffresults", description="[Admin] Clear playoff results for a season (type CONFIRM)")
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         season="Season number to clear playoff results for",
@@ -759,7 +759,7 @@ class ProfitabilityCog(commands.Cog):
             ephemeral=True
         )
     
-    @app_commands.command(name="clearseason", description="[Admin] Clear ALL data for a season (payments, playoff results, seedings)")
+    @app_commands.command(name="clearseason", description="[Admin] Clear ALL season data (type CLEARALL)")
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         season="Season number to clear all data for",
