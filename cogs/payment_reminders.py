@@ -1,6 +1,7 @@
 """
 Payment Reminders Cog - Automatic reminders for unpaid wagers
-Sends reminders every 2 days to users who owe money from settled wagers.
+- Daily reminders in #wagers channel
+- Every 2 days DM to the person who owes
 """
 import discord
 from discord.ext import commands, tasks
@@ -31,7 +32,6 @@ class PaymentRemindersCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.db_path = bot.db_path
-        self.reminder_channel_id = None  # Will be set to a specific channel
         self._ensure_reminder_table()
         
     def _ensure_reminder_table(self):
@@ -43,8 +43,10 @@ class PaymentRemindersCog(commands.Cog):
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS wager_reminders (
                 wager_id INTEGER PRIMARY KEY,
-                last_reminder_sent TEXT,
-                reminder_count INTEGER DEFAULT 0
+                last_dm_sent TEXT,
+                last_channel_sent TEXT,
+                dm_count INTEGER DEFAULT 0,
+                channel_count INTEGER DEFAULT 0
             )
         ''')
         
@@ -53,26 +55,26 @@ class PaymentRemindersCog(commands.Cog):
     
     async def cog_load(self):
         """Called when the cog is loaded."""
-        self.check_unpaid_wagers.start()
-        logger.info("Payment reminders task started")
+        self.daily_channel_reminder.start()
+        self.dm_reminder_check.start()
+        logger.info("Payment reminders tasks started (daily channel, 2-day DM)")
     
     async def cog_unload(self):
         """Called when the cog is unloaded."""
-        self.check_unpaid_wagers.cancel()
-        logger.info("Payment reminders task stopped")
+        self.daily_channel_reminder.cancel()
+        self.dm_reminder_check.cancel()
+        logger.info("Payment reminders tasks stopped")
     
     def get_unpaid_wagers(self):
         """Get all settled but unpaid wagers with loser information."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Get all settled wagers that haven't been paid
-        # A wager is settled when winner_user_id is set, unpaid when is_paid = 0 or NULL
         cursor.execute('''
             SELECT w.wager_id, w.season_year, w.week, w.home_team_id, w.away_team_id,
                    w.home_user_id, w.away_user_id, w.amount, w.winner_user_id,
                    w.challenger_pick, w.opponent_pick, w.created_at,
-                   r.last_reminder_sent, r.reminder_count
+                   r.last_dm_sent, r.last_channel_sent, r.dm_count, r.channel_count
             FROM wagers w
             LEFT JOIN wager_reminders r ON w.wager_id = r.wager_id
             WHERE w.winner_user_id IS NOT NULL 
@@ -84,37 +86,9 @@ class PaymentRemindersCog(commands.Cog):
         conn.close()
         return wagers
     
-    def should_send_reminder(self, last_reminder_sent: Optional[str]) -> bool:
-        """Check if 2 days have passed since the last reminder."""
-        if last_reminder_sent is None:
-            return True
-        
-        try:
-            last_sent = datetime.fromisoformat(last_reminder_sent)
-            time_since = datetime.now() - last_sent
-            return time_since >= timedelta(days=2)
-        except:
-            return True
-    
-    def update_reminder_sent(self, wager_id: int):
-        """Update the last reminder sent time for a wager."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO wager_reminders (wager_id, last_reminder_sent, reminder_count)
-            VALUES (?, ?, 1)
-            ON CONFLICT(wager_id) DO UPDATE SET
-                last_reminder_sent = excluded.last_reminder_sent,
-                reminder_count = wager_reminders.reminder_count + 1
-        ''', (wager_id, datetime.now().isoformat()))
-        
-        conn.commit()
-        conn.close()
-    
     def get_loser_id(self, wager) -> Optional[int]:
         """Determine who lost the wager (the person who owes money)."""
-        wager_id, season_year, week, home_team, away_team, home_user_id, away_user_id, amount, winner_user_id, challenger_pick, opponent_pick, created_at, last_reminder, reminder_count = wager
+        wager_id, season_year, week, home_team, away_team, home_user_id, away_user_id, amount, winner_user_id, challenger_pick, opponent_pick, created_at, last_dm, last_channel, dm_count, channel_count = wager
         
         if winner_user_id == home_user_id:
             return away_user_id
@@ -123,12 +97,63 @@ class PaymentRemindersCog(commands.Cog):
         else:
             return None
     
-    @tasks.loop(hours=12)  # Check twice a day
-    async def check_unpaid_wagers(self):
-        """Check for unpaid wagers and send reminders every 2 days."""
+    def should_send_dm(self, last_dm_sent: Optional[str]) -> bool:
+        """Check if 2 days have passed since the last DM reminder."""
+        if last_dm_sent is None:
+            return True
+        
+        try:
+            last_sent = datetime.fromisoformat(last_dm_sent)
+            time_since = datetime.now() - last_sent
+            return time_since >= timedelta(days=2)
+        except:
+            return True
+    
+    def update_dm_sent(self, wager_id: int):
+        """Update the last DM sent time for a wager."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO wager_reminders (wager_id, last_dm_sent, dm_count)
+            VALUES (?, ?, 1)
+            ON CONFLICT(wager_id) DO UPDATE SET
+                last_dm_sent = excluded.last_dm_sent,
+                dm_count = COALESCE(wager_reminders.dm_count, 0) + 1
+        ''', (wager_id, datetime.now().isoformat()))
+        
+        conn.commit()
+        conn.close()
+    
+    def update_channel_sent(self, wager_id: int):
+        """Update the last channel reminder sent time for a wager."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO wager_reminders (wager_id, last_channel_sent, channel_count)
+            VALUES (?, ?, 1)
+            ON CONFLICT(wager_id) DO UPDATE SET
+                last_channel_sent = excluded.last_channel_sent,
+                channel_count = COALESCE(wager_reminders.channel_count, 0) + 1
+        ''', (wager_id, datetime.now().isoformat()))
+        
+        conn.commit()
+        conn.close()
+    
+    async def get_wagers_channel(self, guild):
+        """Find the #wagers channel."""
+        for channel in guild.text_channels:
+            if channel.name.lower() in ['wagers', 'wager-log', 'wager-logs']:
+                return channel
+        return None
+    
+    @tasks.loop(hours=24)  # Daily channel reminder
+    async def daily_channel_reminder(self):
+        """Post daily reminder in #wagers channel for all unpaid wagers."""
         await self.bot.wait_until_ready()
         
-        logger.info("Checking for unpaid wagers to send reminders...")
+        logger.info("Running daily #wagers channel reminder...")
         
         unpaid_wagers = self.get_unpaid_wagers()
         
@@ -136,14 +161,113 @@ class PaymentRemindersCog(commands.Cog):
             logger.info("No unpaid wagers found")
             return
         
-        # Group wagers by loser (person who owes)
-        reminders_to_send = {}  # loser_id -> list of wager details
+        # Group wagers by loser
+        by_loser = {}
+        for wager in unpaid_wagers:
+            wager_id, season_year, week, home_team, away_team, home_user_id, away_user_id, amount, winner_user_id, challenger_pick, opponent_pick, created_at, last_dm, last_channel, dm_count, channel_count = wager
+            
+            loser_id = self.get_loser_id(wager)
+            if loser_id is None:
+                continue
+            
+            if loser_id not in by_loser:
+                by_loser[loser_id] = {'wagers': [], 'total': 0}
+            
+            by_loser[loser_id]['wagers'].append({
+                'wager_id': wager_id,
+                'week': week,
+                'home_team': home_team,
+                'away_team': away_team,
+                'amount': amount,
+                'winner_id': winner_user_id
+            })
+            by_loser[loser_id]['total'] += amount
+        
+        # Post to #wagers channel in each guild
+        for guild in self.bot.guilds:
+            wagers_channel = await self.get_wagers_channel(guild)
+            if not wagers_channel:
+                continue
+            
+            # Create a summary embed
+            embed = discord.Embed(
+                title="📋 Daily Unpaid Wagers Summary",
+                description=f"**{len(unpaid_wagers)}** unpaid wager(s) across **{len(by_loser)}** member(s)",
+                color=discord.Color.orange(),
+                timestamp=datetime.now()
+            )
+            
+            # Add each debtor
+            for loser_id, data in list(by_loser.items())[:15]:  # Limit to 15 to avoid embed limits
+                try:
+                    loser = await self.bot.fetch_user(loser_id)
+                    loser_name = loser.mention if loser else f"<@{loser_id}>"
+                except:
+                    loser_name = f"<@{loser_id}>"
+                
+                wager_details = []
+                for w in data['wagers'][:3]:  # Show up to 3 wagers per person
+                    try:
+                        winner = await self.bot.fetch_user(w['winner_id'])
+                        winner_name = winner.display_name if winner else "Unknown"
+                    except:
+                        winner_name = "Unknown"
+                    
+                    home_name = TEAM_NAMES.get(w['home_team'], w['home_team'])
+                    away_name = TEAM_NAMES.get(w['away_team'], w['away_team'])
+                    wager_details.append(f"• ${w['amount']:.2f} → **{winner_name}** ({away_name} @ {home_name})")
+                
+                if len(data['wagers']) > 3:
+                    wager_details.append(f"• ...and {len(data['wagers']) - 3} more")
+                
+                embed.add_field(
+                    name=f"{loser_name} owes ${data['total']:.2f}",
+                    value="\n".join(wager_details) if wager_details else "Details unavailable",
+                    inline=False
+                )
+            
+            if len(by_loser) > 15:
+                embed.add_field(
+                    name="...",
+                    value=f"And {len(by_loser) - 15} more members with unpaid wagers",
+                    inline=False
+                )
+            
+            embed.set_footer(text="Use /paid to confirm payments | DM reminders sent every 2 days")
+            
+            try:
+                await wagers_channel.send(embed=embed)
+                logger.info(f"Posted daily wager summary to #{wagers_channel.name}")
+                
+                # Update channel sent tracking
+                for wager in unpaid_wagers:
+                    self.update_channel_sent(wager[0])  # wager_id
+                    
+            except discord.Forbidden:
+                logger.warning(f"Could not post to #{wagers_channel.name}")
+            except Exception as e:
+                logger.error(f"Error posting daily reminder: {e}")
+    
+    @tasks.loop(hours=12)  # Check twice a day for 2-day DM reminders
+    async def dm_reminder_check(self):
+        """Check for unpaid wagers and send DM reminders every 2 days."""
+        await self.bot.wait_until_ready()
+        
+        logger.info("Checking for DM reminders (every 2 days)...")
+        
+        unpaid_wagers = self.get_unpaid_wagers()
+        
+        if not unpaid_wagers:
+            return
+        
+        # Group wagers by loser that need DM reminders
+        reminders_to_send = {}
         
         for wager in unpaid_wagers:
-            wager_id, season_year, week, home_team, away_team, home_user_id, away_user_id, amount, winner_user_id, challenger_pick, opponent_pick, created_at, last_reminder, reminder_count = wager
+            wager_id, season_year, week, home_team, away_team, home_user_id, away_user_id, amount, winner_user_id, challenger_pick, opponent_pick, created_at, last_dm, last_channel, dm_count, channel_count = wager
             
-            # Check if we should send a reminder (2 days since last one)
-            if not self.should_send_reminder(last_reminder):
+            # Check if we should send a DM (2 days since last one)
+            if not self.should_send_dm(last_dm):
                 continue
             
             loser_id = self.get_loser_id(wager)
@@ -160,15 +284,15 @@ class PaymentRemindersCog(commands.Cog):
                 'away_team': away_team,
                 'amount': amount,
                 'winner_id': winner_user_id,
-                'reminder_count': reminder_count or 0
+                'dm_count': dm_count or 0
             })
         
-        # Send reminders
+        # Send DM reminders
         for loser_id, wagers in reminders_to_send.items():
-            await self.send_reminder(loser_id, wagers)
+            await self.send_dm_reminder(loser_id, wagers)
     
-    async def send_reminder(self, loser_id: int, wagers: list):
-        """Send a reminder DM and channel message to the user who owes money."""
+    async def send_dm_reminder(self, loser_id: int, wagers: list):
+        """Send a DM reminder to the user who owes money."""
         try:
             user = await self.bot.fetch_user(loser_id)
             if user is None:
@@ -178,24 +302,28 @@ class PaymentRemindersCog(commands.Cog):
             # Calculate total owed
             total_owed = sum(w['amount'] for w in wagers)
             
-            # Build the reminder message
+            # Build the DM reminder
             embed = discord.Embed(
                 title="💰 Wager Payment Reminder",
-                description=f"Hey {user.mention}! You have **{len(wagers)}** unpaid wager(s) totaling **${total_owed:.2f}**.",
+                description=f"You have **{len(wagers)}** unpaid wager(s) totaling **${total_owed:.2f}**.",
                 color=discord.Color.orange()
             )
             
             # Add details for each unpaid wager
-            for w in wagers[:10]:  # Limit to 10 to avoid embed limits
-                winner = await self.bot.fetch_user(w['winner_id'])
-                winner_name = winner.display_name if winner else "Unknown"
+            for w in wagers[:10]:  # Limit to 10
+                try:
+                    winner = await self.bot.fetch_user(w['winner_id'])
+                    winner_name = winner.display_name if winner else "Unknown"
+                except:
+                    winner_name = "Unknown"
+                
                 home_name = TEAM_NAMES.get(w['home_team'], w['home_team'])
                 away_name = TEAM_NAMES.get(w['away_team'], w['away_team'])
                 
-                reminder_num = w['reminder_count'] + 1
+                reminder_num = w['dm_count'] + 1
                 embed.add_field(
-                    name=f"Wager #{w['wager_id']} - Week {w['week']}",
-                    value=f"**{away_name} @ {home_name}**\nAmount: **${w['amount']:.2f}**\nOwed to: **{winner_name}**\n*Reminder #{reminder_num}*",
+                    name=f"${w['amount']:.2f} owed to {winner_name}",
+                    value=f"**{away_name} @ {home_name}** (Wk {w['week']})\n*DM Reminder #{reminder_num}*",
                     inline=True
                 )
             
@@ -208,83 +336,41 @@ class PaymentRemindersCog(commands.Cog):
             
             embed.add_field(
                 name="How to Pay",
-                value="After paying, tell the winner to use `/paid` or `/paid @you` to confirm receipt.\nUse `/mywagers` to see all your wagers.",
+                value="Pay the winner directly, then have them use `/paid` to confirm.\nUse `/mywagers` to see all your wagers.",
                 inline=False
             )
             
-            embed.set_footer(text="Reminders are sent every 2 days until payment is confirmed.")
+            embed.set_footer(text="DM reminders sent every 2 days | Daily reminders in #wagers")
             embed.timestamp = datetime.now()
             
-            # Try to send DM first
+            # Send DM
             try:
                 await user.send(embed=embed)
-                logger.info(f"Sent DM reminder to {user.display_name} for {len(wagers)} unpaid wagers")
+                logger.info(f"Sent DM reminder to {user.display_name} for {len(wagers)} unpaid wagers (${total_owed:.2f})")
+                
+                # Update DM tracking for each wager
+                for w in wagers:
+                    self.update_dm_sent(w['wager_id'])
+                    
             except discord.Forbidden:
-                logger.warning(f"Could not DM user {user.display_name}, will post in channel")
-            
-            # Post in #wagers channel (primary) or fallback channels
-            for guild in self.bot.guilds:
-                # Prioritize #wagers channel for logging
-                channel = None
-                for ch in guild.text_channels:
-                    if ch.name.lower() in ['wagers', 'wager-log', 'wager-logs']:
-                        channel = ch
-                        break
-                
-                if channel is None:
-                    channel = discord.utils.get(guild.text_channels, name='bot-commands')
-                if channel is None:
-                    channel = discord.utils.get(guild.text_channels, name='general')
-                
-                if channel:
-                    # Create a detailed public reminder for the wagers channel
-                    public_embed = discord.Embed(
-                        title="⏰ Payment Reminder",
-                        description=f"{user.mention} owes **${total_owed:.2f}** from **{len(wagers)}** unpaid wager(s)",
-                        color=discord.Color.red()
-                    )
-                    
-                    # Add wager details
-                    for w in wagers[:5]:  # Show up to 5 wagers
-                        winner = await self.bot.fetch_user(w['winner_id'])
-                        winner_name = winner.display_name if winner else "Unknown"
-                        home_name = TEAM_NAMES.get(w['home_team'], w['home_team'])
-                        away_name = TEAM_NAMES.get(w['away_team'], w['away_team'])
-                        public_embed.add_field(
-                            name=f"${w['amount']:.2f} to {winner_name}",
-                            value=f"{away_name} @ {home_name} (Wk {w['week']})",
-                            inline=True
-                        )
-                    
-                    if len(wagers) > 5:
-                        public_embed.add_field(
-                            name="...",
-                            value=f"And {len(wagers) - 5} more",
-                            inline=True
-                        )
-                    
-                    public_embed.set_footer(text="Reminder #{} | Use /paid to confirm payments".format(wagers[0]['reminder_count'] + 1))
-                    public_embed.timestamp = datetime.now()
-                    
-                    try:
-                        await channel.send(embed=public_embed)
-                        logger.info(f"Posted public reminder for {user.display_name} in {channel.name}")
-                    except discord.Forbidden:
-                        logger.warning(f"Could not post in channel {channel.name}")
-                    break
-            
-            # Update reminder tracking for each wager
-            for w in wagers:
-                self.update_reminder_sent(w['wager_id'])
+                logger.warning(f"Could not DM user {user.display_name} - DMs disabled")
+            except Exception as e:
+                logger.error(f"Error sending DM to {user.display_name}: {e}")
                 
         except Exception as e:
-            logger.error(f"Error sending reminder to user {loser_id}: {e}")
+            logger.error(f"Error in send_dm_reminder for user {loser_id}: {e}")
     
-    @check_unpaid_wagers.before_loop
-    async def before_check_unpaid_wagers(self):
-        """Wait for the bot to be ready before starting the task."""
+    @daily_channel_reminder.before_loop
+    async def before_daily_channel_reminder(self):
+        """Wait for the bot to be ready."""
         await self.bot.wait_until_ready()
-        logger.info("Payment reminders task is ready")
+        logger.info("Daily channel reminder task is ready")
+    
+    @dm_reminder_check.before_loop
+    async def before_dm_reminder_check(self):
+        """Wait for the bot to be ready."""
+        await self.bot.wait_until_ready()
+        logger.info("DM reminder check task is ready")
     
     @app_commands.command(name="checkreminders", description="[Admin] Manually trigger payment reminder check")
     @app_commands.default_permissions(administrator=True)
@@ -312,16 +398,17 @@ class PaymentRemindersCog(commands.Cog):
             f"• Total unpaid wagers: **{len(unpaid_wagers)}**\n"
             f"• Users with outstanding debts: **{len(losers)}**\n"
             f"• Total amount owed: **${total_owed:.2f}**\n\n"
-            f"Running reminder check now...",
+            f"Running reminder checks now...",
             ephemeral=True
         )
         
-        # Trigger the check
-        await self.check_unpaid_wagers()
+        # Trigger both checks
+        await self.daily_channel_reminder()
+        await self.dm_reminder_check()
         
-        await interaction.followup.send("✅ Reminder check complete! Reminders sent where applicable.", ephemeral=True)
+        await interaction.followup.send("✅ Reminder checks complete!", ephemeral=True)
     
-    @app_commands.command(name="allunpaidwagers", description="Show all unpaid wagers in the league (admin view)")
+    @app_commands.command(name="allunpaidwagers", description="[Admin] Show all unpaid wagers in the league")
     @app_commands.default_permissions(administrator=True)
     async def all_unpaid_wagers(self, interaction: discord.Interaction):
         """Display all unpaid wagers (admin view)."""
@@ -334,8 +421,8 @@ class PaymentRemindersCog(commands.Cog):
             return
         
         embed = discord.Embed(
-            title="💸 Unpaid Wagers",
-            description=f"There are **{len(unpaid)}** unpaid wagers in the league.",
+            title="💸 All Unpaid Wagers",
+            description=f"**{len(unpaid)}** unpaid wager(s) in the league",
             color=discord.Color.red()
         )
         
@@ -349,36 +436,28 @@ class PaymentRemindersCog(commands.Cog):
                 by_loser[loser_id]['wagers'].append(wager)
                 by_loser[loser_id]['total'] += wager[7]  # amount
         
-        # Add fields for each debtor
-        for loser_id, data in list(by_loser.items())[:10]:  # Limit to 10
+        for loser_id, data in list(by_loser.items())[:10]:
             try:
-                user = await self.bot.fetch_user(loser_id)
-                user_name = user.display_name if user else f"User {loser_id}"
+                loser = await self.bot.fetch_user(loser_id)
+                loser_name = loser.display_name if loser else f"User {loser_id}"
             except:
-                user_name = f"User {loser_id}"
-            
-            wager_list = []
-            for w in data['wagers'][:3]:  # Show up to 3 wagers per person
-                wager_list.append(f"• Wager #{w[0]}: ${w[7]:.2f}")
-            
-            if len(data['wagers']) > 3:
-                wager_list.append(f"• ...and {len(data['wagers']) - 3} more")
+                loser_name = f"User {loser_id}"
             
             embed.add_field(
-                name=f"💰 {user_name}",
-                value=f"**Owes: ${data['total']:.2f}**\n" + "\n".join(wager_list),
+                name=f"{loser_name}",
+                value=f"**{len(data['wagers'])}** wager(s) | **${data['total']:.2f}** owed",
                 inline=True
             )
         
         if len(by_loser) > 10:
             embed.add_field(
                 name="...",
-                value=f"And {len(by_loser) - 10} more users with unpaid wagers",
+                value=f"And {len(by_loser) - 10} more members",
                 inline=False
             )
         
-        embed.set_footer(text="Reminders are automatically sent every 2 days")
-        embed.timestamp = datetime.now()
+        total_all = sum(d['total'] for d in by_loser.values())
+        embed.set_footer(text=f"Total outstanding: ${total_all:.2f}")
         
         await interaction.followup.send(embed=embed)
 
