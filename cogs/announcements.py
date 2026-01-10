@@ -135,18 +135,7 @@ class AnnouncementsCog(commands.Cog):
         )
         embed.set_footer(text=f"Posted by {interaction.user.display_name}")
         
-        # Post to #announcements
-        announcements_channel = discord.utils.get(guild.text_channels, name='announcements')
-        if announcements_channel:
-            try:
-                await announcements_channel.send(embed=embed)
-                results.append(f"✅ Posted to {announcements_channel.mention}")
-            except Exception as e:
-                results.append(f"❌ Failed to post to #announcements: {e}")
-        else:
-            results.append("⚠️ #announcements channel not found")
-        
-        # Post to #townsquare
+        # Post to #townsquare (primary announcement channel)
         townsquare_channel = discord.utils.get(guild.text_channels, name='townsquare')
         if townsquare_channel:
             try:
@@ -234,7 +223,7 @@ class AnnouncementsCog(commands.Cog):
         )
         embed.set_footer(text=f"Posted by {interaction.user.display_name}")
         
-        # Post to #townsquare
+        # Post to #townsquare (primary announcement channel)
         townsquare_channel = discord.utils.get(guild.text_channels, name='townsquare')
         if townsquare_channel:
             try:
@@ -245,23 +234,12 @@ class AnnouncementsCog(commands.Cog):
         else:
             results.append("⚠️ #townsquare channel not found")
         
-        # Post to #announcements
-        announcements_channel = discord.utils.get(guild.text_channels, name='announcements')
-        if announcements_channel:
-            try:
-                await announcements_channel.send(embed=embed)
-                results.append(f"✅ Posted to {announcements_channel.mention}")
-            except Exception as e:
-                results.append(f"❌ Failed to post to #announcements: {e}")
-        else:
-            results.append("⚠️ #announcements channel not found")
-        
-        results.append("\n📝 **Channels only** - No DMs sent")
-        results.append("💡 Use `/announceall` to also DM all members")
+        results.append("\n📝 **Channel only** - No DMs sent")
+        results.append("💡 Use `/announcement` to also DM all team owners")
         
         await interaction.followup.send("\n".join(results), ephemeral=True)
     
-    @app_commands.command(name="announceall", description="[Admin] Post to #townsquare, #announcements AND DM all members")
+    @app_commands.command(name="announceall", description="[Admin] Post to #townsquare AND DM all team owners")
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         message="The announcement message to post and DM to all members"
@@ -272,7 +250,7 @@ class AnnouncementsCog(commands.Cog):
         message: str
     ):
         """
-        Post an announcement to #townsquare, #announcements, AND DM all registered members.
+        Post an announcement to #townsquare AND DM all registered members.
         Use this for important league-wide announcements.
         """
         await interaction.response.defer(ephemeral=True)
@@ -288,7 +266,7 @@ class AnnouncementsCog(commands.Cog):
         )
         embed.set_footer(text=f"Posted by {interaction.user.display_name}")
         
-        # Post to #townsquare
+        # Post to #townsquare (primary announcement channel)
         townsquare_channel = discord.utils.get(guild.text_channels, name='townsquare')
         if townsquare_channel:
             try:
@@ -298,17 +276,6 @@ class AnnouncementsCog(commands.Cog):
                 results.append(f"❌ Failed to post to #townsquare: {e}")
         else:
             results.append("⚠️ #townsquare channel not found")
-        
-        # Post to #announcements
-        announcements_channel = discord.utils.get(guild.text_channels, name='announcements')
-        if announcements_channel:
-            try:
-                await announcements_channel.send(embed=embed)
-                results.append(f"✅ Posted to {announcements_channel.mention}")
-            except Exception as e:
-                results.append(f"❌ Failed to post to #announcements: {e}")
-        else:
-            results.append("⚠️ #announcements channel not found")
         
         # DM all registered team owners
         registered_owners = self.get_registered_owners()

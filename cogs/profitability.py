@@ -30,19 +30,19 @@ PLAYOFF_PAYOUTS = {
 AFC_RETENTION_RATE = 0.20  # AFC teams keep 20% of their earnings
 NFC_PAIRED_RATE = 0.80     # NFC teams get 80% of their paired AFC team's earnings
 
-# NFC Seeds 8-16 pay into the pot
+# NFC Seeds 8-16 pay into the pot (NFC only - AFC does not pay)
 # Payment structure: who pays to whom
 NFC_PAYER_STRUCTURE = {
-    # Seeds 15-16 pay $50 each to WC/Bye winners (split among 4 winners)
+    # Seeds 15-16 pay $100 each ($200 total split among 4 WC/Bye winners = $50 each)
     15: {'round': 'wildcard', 'amount': 100},
     16: {'round': 'wildcard', 'amount': 100},
-    # Seeds 13-14 pay $100 each to Divisional winners (split among 2 winners)
+    # Seeds 13-14 pay $100 each ($200 total split among Divisional winners)
     13: {'round': 'divisional', 'amount': 100},
     14: {'round': 'divisional', 'amount': 100},
-    # Seeds 11-12 pay $100 each to Conference winner
+    # Seeds 11-12 pay $100 each ($200 total to Conference Championship winner)
     11: {'round': 'conference', 'amount': 100},
     12: {'round': 'conference', 'amount': 100},
-    # Seeds 8-10 pay $100 each to Super Bowl winner
+    # Seeds 8-10 pay $100 each ($300 total to Super Bowl winner)
     8: {'round': 'superbowl', 'amount': 100},
     9: {'round': 'superbowl', 'amount': 100},
     10: {'round': 'superbowl', 'amount': 100},

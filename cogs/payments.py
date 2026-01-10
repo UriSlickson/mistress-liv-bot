@@ -264,10 +264,10 @@ class PaymentsCog(commands.Cog):
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="paymentschedule", description="View all outstanding payments (posts to #dues)")
+    @app_commands.command(name="paymentschedule", description="View all outstanding payments (posts to #payouts)")
     @app_commands.describe(season="Season to view (optional, shows all if not specified)")
     async def payment_schedule(self, interaction: discord.Interaction, season: Optional[int] = None):
-        """Post all outstanding payments to the #dues channel."""
+        """Post all outstanding payments to the #payouts channel."""
         await interaction.response.defer()
         
         conn = self.get_db_connection()
@@ -313,10 +313,12 @@ class PaymentsCog(commands.Cog):
             await interaction.followup.send("✅ **No outstanding payments!** Everyone is squared up.")
             return
         
-        # Find #dues channel
-        dues_channel = discord.utils.get(interaction.guild.channels, name='dues')
-        if not dues_channel:
-            await interaction.followup.send("❌ Could not find #dues channel!", ephemeral=True)
+        # Find #payouts channel (or fallback to #dues for backwards compatibility)
+        payouts_channel = discord.utils.get(interaction.guild.channels, name='payouts')
+        if not payouts_channel:
+            payouts_channel = discord.utils.get(interaction.guild.channels, name='dues')
+        if not payouts_channel:
+            await interaction.followup.send("❌ Could not find #payouts channel! Use `/createpayouts` to create one.", ephemeral=True)
             return
         
         # Build the payment schedule embed
@@ -364,9 +366,9 @@ class PaymentsCog(commands.Cog):
         embed.add_field(name="💵 Total Outstanding", value=f"**${total_outstanding:.2f}**", inline=False)
         embed.set_footer(text="Use /markpaid to mark payments as complete")
         
-        # Post to #dues channel
-        await dues_channel.send(embed=embed)
-        await interaction.followup.send(f"✅ Payment schedule posted to {dues_channel.mention}!")
+        # Post to #payouts channel
+        await payouts_channel.send(embed=embed)
+        await interaction.followup.send(f"✅ Payment schedule posted to {payouts_channel.mention}!")
 
     @app_commands.command(name="createpayment", description="[Admin] Create a payment obligation")
     @app_commands.default_permissions(administrator=True)
