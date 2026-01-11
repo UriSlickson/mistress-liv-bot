@@ -92,7 +92,7 @@ class PaymentsCog(commands.Cog):
         cursor.execute('''
             SELECT payment_id, payer_discord_id, amount, season, round
             FROM payments
-            WHERE recipient_discord_id = ? AND is_paid = 0
+            WHERE payee_discord_id = ? AND is_paid = 0
         ''', (interaction.user.id,))
         generated_debts = cursor.fetchall()
         
@@ -156,7 +156,7 @@ class PaymentsCog(commands.Cog):
         
         # Get from generated payments table
         cursor.execute('''
-            SELECT payment_id, recipient_discord_id, amount, season, round
+            SELECT payment_id, payee_discord_id, amount, season, round
             FROM payments
             WHERE payer_discord_id = ? AND is_paid = 0
         ''', (interaction.user.id,))
@@ -235,7 +235,7 @@ class PaymentsCog(commands.Cog):
         # What's owed to me (generated)
         cursor.execute('''
             SELECT SUM(amount) FROM payments
-            WHERE recipient_discord_id = ? AND is_paid = 0
+            WHERE payee_discord_id = ? AND is_paid = 0
         ''', (interaction.user.id,))
         generated_incoming = cursor.fetchone()[0] or 0
         
@@ -293,14 +293,14 @@ class PaymentsCog(commands.Cog):
         # Get all unpaid generated payments
         if season:
             cursor.execute('''
-                SELECT payment_id, payer_discord_id, recipient_discord_id, amount, season, round
+                SELECT payment_id, payer_discord_id, payee_discord_id, amount, season, round
                 FROM payments
                 WHERE is_paid = 0 AND season = ?
                 ORDER BY season, round
             ''', (season,))
         else:
             cursor.execute('''
-                SELECT payment_id, payer_discord_id, recipient_discord_id, amount, season, round
+                SELECT payment_id, payer_discord_id, payee_discord_id, amount, season, round
                 FROM payments
                 WHERE is_paid = 0
                 ORDER BY season, round
@@ -444,7 +444,7 @@ class PaymentsCog(commands.Cog):
         if not payment:
             # Try generated payments
             cursor.execute('''
-                SELECT payment_id, recipient_discord_id, amount FROM payments
+                SELECT payment_id, payee_discord_id, amount FROM payments
                 WHERE payer_discord_id = ? AND is_paid = 0 AND amount = ?
                 ORDER BY season
                 LIMIT 1

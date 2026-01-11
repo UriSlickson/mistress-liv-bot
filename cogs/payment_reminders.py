@@ -73,7 +73,7 @@ class PaymentRemindersCog(commands.Cog):
         cursor.execute('''
             SELECT w.wager_id, w.season_year, w.week, w.home_team_id, w.away_team_id,
                    w.home_user_id, w.away_user_id, w.amount, w.winner_user_id,
-                   w.challenger_pick, w.opponent_pick, w.created_at,
+                   w.winner_team_id, w.created_at,
                    r.last_dm_sent, r.last_channel_sent, r.dm_count, r.channel_count
             FROM wagers w
             LEFT JOIN wager_reminders r ON w.wager_id = r.wager_id
@@ -88,7 +88,7 @@ class PaymentRemindersCog(commands.Cog):
     
     def get_loser_id(self, wager) -> Optional[int]:
         """Determine who lost the wager (the person who owes money)."""
-        wager_id, season_year, week, home_team, away_team, home_user_id, away_user_id, amount, winner_user_id, challenger_pick, opponent_pick, created_at, last_dm, last_channel, dm_count, channel_count = wager
+        wager_id, season_year, week, home_team, away_team, home_user_id, away_user_id, amount, winner_user_id, winner_team_id, created_at, last_dm, last_channel, dm_count, channel_count = wager
         
         if winner_user_id == home_user_id:
             return away_user_id
@@ -164,7 +164,7 @@ class PaymentRemindersCog(commands.Cog):
         # Group wagers by loser
         by_loser = {}
         for wager in unpaid_wagers:
-            wager_id, season_year, week, home_team, away_team, home_user_id, away_user_id, amount, winner_user_id, challenger_pick, opponent_pick, created_at, last_dm, last_channel, dm_count, channel_count = wager
+            wager_id, season_year, week, home_team, away_team, home_user_id, away_user_id, amount, winner_user_id, winner_team_id, created_at, last_dm, last_channel, dm_count, channel_count = wager
             
             loser_id = self.get_loser_id(wager)
             if loser_id is None:
@@ -264,7 +264,7 @@ class PaymentRemindersCog(commands.Cog):
         reminders_to_send = {}
         
         for wager in unpaid_wagers:
-            wager_id, season_year, week, home_team, away_team, home_user_id, away_user_id, amount, winner_user_id, challenger_pick, opponent_pick, created_at, last_dm, last_channel, dm_count, channel_count = wager
+            wager_id, season_year, week, home_team, away_team, home_user_id, away_user_id, amount, winner_user_id, winner_team_id, created_at, last_dm, last_channel, dm_count, channel_count = wager
             
             # Check if we should send a DM (2 days since last one)
             if not self.should_send_dm(last_dm):

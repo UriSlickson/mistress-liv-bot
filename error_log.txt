@@ -9,3 +9,15 @@ File "/opt/venv/lib/python3.12/site-packages/discord/guild.py", line 2503, in fe
     raise ClientException('Intents.members must be enabled to use this.')
 
 ISSUE: The bot needs the Server Members Intent enabled to use guild.fetch_members()
+
+
+---
+
+Error from Railway logs (Jan 11, 2026):
+
+Command 'whoiowe' raised an exception: OperationalError: no such column: recipient_discord_id
+
+The error is in /app/cogs/payments.py in the who_i_owe function.
+
+The SQL query is trying to select a column called "recipient_discord_id" that doesn't exist in the database.
+The actual column name in the payments table is "payee_discord_id" not "recipient_discord_id".
