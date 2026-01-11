@@ -1,0 +1,9 @@
+Requirements
+
+1. Make sure your Twitch recordings are on. Your opponents need to have a method to watch the game if they miss it when you go live.
+
+2. Download "Remote Play" apps for your console. This will allow you to AP, train, roster adjustments, trades, etc. It is your responsibility to be AP'd for your opponent, it is not a commishes job to prepare you.
+
+3. Request to join league my maddensite by typing "/register" in #townsquare. A commish will then need to assign your team.
+
+4. Connect your Twitch, YouTube, etc by typing "/connectservice". select the service, then type in your link for it.

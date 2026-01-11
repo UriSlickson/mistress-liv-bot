@@ -1,0 +1,39 @@
+Per Szn Payout Structure
+
+**League Basics**
+- 32 teams (NFC payers fund pot; AFC free/partnered for easy fill).
+- All payments P2P (Cash App/Venmo preferred).
+- Commissioner does not collect payments.
+
+**Same-Seed Ties & AFC Share**
+- Each NFC team is paired for the season with the AFC team that finishes in the same seed position (e.g., NFC seed 5 paired with AFC seed 5).
+- Pairings apply league-wide: playoff to playoff, non-playoff to non-playoff.
+- The NFC partner handles all wagers/earnings for the paired AFC team.
+- AFC partner gets 20% of their team's playoff earnings (paid post-season by NFC partner).
+- Pre-playoffs election: AFC partner can elect to pay $50 to NFC partner → $50 returned first on that teams earnings, then 50/50 split of remaining AFC team earnings paid to the AFC member once paid for payouts.
+
+**Playoff Pot ($900 Max)**
+- Paid by NFC non-playoff seeds 8-16 ($100 each P2P when full).
+- Payouts go to previous season's playoff winners, split by how far they advanced:
+  - Seeds 15 & 16 pay a total of $100 each, but $50 to each of the (4) WC/Bye Winners.
+  - Seeds 13 & 14 pay a total of $100 each to each of the (2) Division Winners.
+  - Seeds 11 & 12 pay a total of $100 each to the (1) Conference Winner.
+  - Seeds 8, 9, & 10 pay a total of $100 each to the (1) Super Bowl Winner.
+- Dues are due by week 18 of the following season.
+
+**Previous Season Playoff Payouts**
+- WC/Bye Win Only = $50 (4 payouts)
+- Divisional Win Only = $100 (2 payouts)
+- Conference Win Only = $200 (1 payout)
+- Super Bowl Win = $300 (1 payout)
+- Pot Reduces $100 per (Open/CPU) NFC Team
+
+**Payout Reduction from Open/CPU NFC Teams**
+- CPU/open auto-assigned lowest NFC seeds (16 first, then down). CPU pays $0.
+- Pot reductions (lower rounds first):
+  - 1 open: WC/Bye earnings → $25 each.
+  - 2 open: No WC/Bye earnings.
+  - 3 open: No WC/Bye + Divisional → $50 each.
+  - 4 open: No WC/Bye or Divisional.
+  - Continues upward (e.g., 5 open: No WC/Bye/Div + Conference reduced).
+- RS pot reduces $100 per missing NFC payer (auto-reduce highest recipients first or as defined in tracker).

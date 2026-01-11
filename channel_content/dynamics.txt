@@ -1,0 +1,20 @@
+Dynamics
+
+League Name: Mistress LIV
+Type: CPU slow sims
+Duration: 6 szns
+Rosters: Fantasy Draft
+Mode: All Madden
+SS & XF: Abilities On, no changing abilities.
+Quarters: 11 min/20 accel
+Advance: Daily
+Time: 11p est or week done
+Practice injury & wear and tear are off
+Injuries: Pre & offszn off, on during szn
+Slider: XP to 70% of par
+Slider: Injury to 20
+Slider: Fatigue to 25
+Slider: Roughing passer to 25
+Slider: Roughing kicker off
+Slider: Run into kicker off
+Slider: Intl grounding off

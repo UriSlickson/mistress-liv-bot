@@ -1,0 +1,47 @@
+RULES
+
+**Advance**
+- Daily by 11p est or after all games are accounted for.
+
+**Communication**
+- If member does not communicate by 5p est, they are subject to be AP'd.
+- Checking out, going aloof, etc may result in removal and forfeiture of payouts. Must stay active.
+
+**Coaches**
+- Must use a Created Coach, unless joined after szn 3.
+- Cannot fire coaches or coordinators.
+
+**Rosters**
+- No Roster Position Changes
+- Can start a player where accessible in the depth chart, excluding K/P at QB, or QB at WR
+- Only (1) mentor allowed per position.
+- Cannot add a 71+ to psquad then back to roster to resign them.
+- All player edits must be streamed.
+- No editing Throwing Arms (Right or Left) or Throwing Style.
+- Created player name changes ok but must be real names not nicknames, college, equipment & jersey # changes ok.
+
+**Coaching Abilities**
+- Camp Counselor is a banned coaching ability.
+- Must show coaching abilities used when streaming prior to entering the game.
+- When rewarded a development upgrade in training, please provide with a screen shot proving camp counsellor was not used.
+- If it is found this was used, players will be downgraded at commissioners discretion based on research of affects.
+
+**Playbooks**
+- No Custom or Live playbooks
+- Must show playbook when streaming.
+
+**Trades**
+- No trade deadline.
+- Trades are off during the resigning stage.
+- No trading w/ CPU.
+- No trading amongst Mav/Goose partners.
+- Only trade assets on the game. There is no other form of transaction for trades in the competition.
+- Cannot trade draft picks the last szn of the franchise.
+
+**Streaming**
+- When streaming a game must post the link in #townsquare, the game channel, & DM the opponent.
+- No pausing once a game begins.
+- Streams must be saved, and/or provided upon request.
+- Home Team streams, if unable, visitor has option, if neither can stream it's a Fair Sim.
+- (1) start per game, must resume if disconnected.
+- Injuries stay on for games that result in a FW/FL scenario, which will only occur for disconnects that didn't reconnect.
