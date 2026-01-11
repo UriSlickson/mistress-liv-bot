@@ -348,9 +348,12 @@ class CommandGuideCog(commands.Cog):
             wager_embed.add_field(
                 name="💵 Marking Wagers Paid",
                 value=(
-                    "**Command:** `/markwagerpaid wager_id`\n\n"
-                    "After paying the winner, use this command to mark it complete. "
-                    "Only the winner can confirm payment received."
+                    "**Command:** `/paid`\n\n"
+                    "After receiving payment, use this command to mark it complete. "
+                    "Select your opponent from the dropdown - no wager IDs needed!\n\n"
+                    "**🔔 Automated Reminders:**\n"
+                    "• Daily reminders posted in #wagers channel\n"
+                    "• DM reminders every 2 days with amounts owed"
                 ),
                 inline=False
             )
@@ -415,24 +418,18 @@ class CommandGuideCog(commands.Cog):
             )
             
             payout_embed.add_field(
-                name="📝 ADMIN: How to Process Season End Payouts",
+                name="🤖 AUTOMATED: Snallabot Integration",
                 value=(
-                    "**STEP 1: Set Seedings After Playoffs**\n"
-                    "Go to MyMadden standings page and get final seeds.\n"
-                    "Run for each conference:\n"
-                    "`/bulkseeding 2027 AFC NE,PIT,CAR,NYG,LAR,BUF,JAX,DEN,WAS,LAC,KC,HOU,CHI,ARI,CIN,SF`\n"
-                    "`/bulkseeding 2027 NFC LV,ATL,TEN,MIA,SEA,DAL,PHI,IND,GB,NO,TB,MIN,CLE,DET,NYJ,BAL`\n"
-                    "*(List teams in order from seed 1-16)*\n\n"
-                    "**STEP 2: Record Playoff Winners**\n"
-                    "For each playoff round winner, run:\n"
-                    "`/setplayoffwinner 2027 wildcard @winner AFC`\n"
-                    "`/setplayoffwinner 2027 divisional @winner NFC`\n"
-                    "`/setplayoffwinner 2027 conference @winner AFC`\n"
-                    "`/setplayoffwinner 2027 superbowl @winner`\n\n"
-                    "**STEP 3: Generate Payments**\n"
-                    "`/generatepayments 2027`\n\n"
-                    "**STEP 4: Post to Division Channels**\n"
-                    "`/postpayments 2027`"
+                    "**Payouts are now FULLY AUTOMATED!**\n\n"
+                    "• Snallabot syncs Madden data hourly\n"
+                    "• Playoff results auto-detected (weeks 19-23)\n"
+                    "• Seedings auto-imported after Super Bowl\n"
+                    "• Payments auto-generated and posted to #payouts\n\n"
+                    "**Manual Override (if needed):**\n"
+                    "`/bulkseeding season conference teams`\n"
+                    "`/setplayoffwinner season round @winner conference`\n"
+                    "`/generatepayments season`\n"
+                    "`/postpayments season`"
                 ),
                 inline=False
             )
@@ -617,11 +614,38 @@ class CommandGuideCog(commands.Cog):
             embeds_posted += 1
             
             # =====================
-            # 10. INFO COMMANDS
+            # 10. LEAGUE INFO COMMANDS
+            # =====================
+            league_info_embed = discord.Embed(
+                title="📚 League Info Commands",
+                description="Quick access to league rules, settings, and payout structure.",
+                color=discord.Color.dark_gold()
+            )
+            
+            league_info_embed.add_field(
+                name="📜 League Structure",
+                value=(
+                    "**`/rules`** - View all league rules\n"
+                    "Advance times, communication, rosters, trades, streaming, etc.\n\n"
+                    "**`/dynamics`** - View league settings\n"
+                    "Game mode, quarters, sliders, injury settings, etc.\n\n"
+                    "**`/requirements`** - Member requirements\n"
+                    "Twitch, Remote Play, Companion App, MyMadden registration\n\n"
+                    "**`/payouts`** - Season payout structure\n"
+                    "AFC/NFC pairing, playoff pot, CPU team reductions"
+                ),
+                inline=False
+            )
+            
+            await channel.send(embed=league_info_embed)
+            embeds_posted += 1
+            
+            # =====================
+            # 11. GENERAL INFO COMMANDS
             # =====================
             info_embed = discord.Embed(
-                title="ℹ️ Info Commands",
-                description="General information and help commands.",
+                title="ℹ️ General Info Commands",
+                description="Help and bot information.",
                 color=discord.Color.blurple()
             )
             
@@ -644,7 +668,7 @@ class CommandGuideCog(commands.Cog):
             embeds_posted += 1
             
             # =====================
-            # 11. MYMADDEN INTEGRATION
+            # 12. MYMADDEN INTEGRATION
             # =====================
             integration_embed = discord.Embed(
                 title="🔗 MyMadden + Mistress LIV Integration",
