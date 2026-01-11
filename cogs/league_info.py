@@ -195,13 +195,19 @@ class LeagueInfo(commands.Cog):
         )
         
         embed.add_field(
-            name="3️⃣ Join MyMadden Site",
+            name="3️⃣ Madden Companion App",
+            value="Please download the Madden Companion App. This allows you to AP in seconds on the app.",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="4️⃣ Join MyMadden Site",
             value="Request to join league my maddensite by typing `/register` in #townsquare. A commish will then need to assign your team.",
             inline=False
         )
         
         embed.add_field(
-            name="4️⃣ Connect Streaming Services",
+            name="5️⃣ Connect Streaming Services",
             value="Connect your Twitch, YouTube, etc by typing `/connectservice`. Select the service, then type in your link for it.",
             inline=False
         )
