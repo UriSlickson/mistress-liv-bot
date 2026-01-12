@@ -127,12 +127,12 @@ class WelcherCog(commands.Cog):
             value="❌ Cannot create or accept wagers\n❌ Cannot participate in playoff payouts\n❌ Cannot join Best Ball events",
             inline=False
         )
-        embed.set_footer(text="Use /unwelcher to reactivate this user")
+        embed.set_footer(text="Use /redeemed to reactivate this user")
         embed.timestamp = datetime.utcnow()
         
         await interaction.response.send_message(embed=embed)
     
-    @app_commands.command(name="unwelcher", description="Reactivate a user who was banned as a welcher")
+    @app_commands.command(name="redeemed", description="Reactivate a user who was banned as a welcher")
     @app_commands.describe(
         user="The user to reactivate",
         reason="Reason for reactivation (e.g., 'Paid their debt')"
@@ -224,7 +224,7 @@ class WelcherCog(commands.Cog):
             
             embed.add_field(name=user_display, value=value, inline=False)
         
-        embed.set_footer(text="Use /unwelcher to reactivate a user")
+        embed.set_footer(text="Use /redeemed to reactivate a user")
         await interaction.response.send_message(embed=embed)
     
     @app_commands.command(name="checkwelcher", description="Check if a user is banned as a welcher")
