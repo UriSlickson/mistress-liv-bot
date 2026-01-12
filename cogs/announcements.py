@@ -4,7 +4,7 @@ COMMANDS:
 /announce all - Post to #townsquare, #announcements, AND DM all members
 /announce post - Post to #townsquare and #announcements only
 /announce dm - DM all league members only
-/announce clear - Clear a selected channel
+/clearchannel - Clear a selected channel (standalone)
 """
 
 import discord
@@ -160,14 +160,16 @@ class AnnouncementsCog(commands.Cog):
             f"✅ DMed {success} league members ({failed} failed)",
             ephemeral=True
         )
+
+    # ==================== STANDALONE COMMANDS ====================
     
-    @announce_group.command(name="clear", description="Delete all messages in a selected channel")
+    @app_commands.command(name="clearchannel", description="[Admin] Delete all messages in a selected channel")
     @app_commands.describe(
         channel="Channel to clear",
         confirm="Type CONFIRM to proceed"
     )
-    @app_commands.checks.has_permissions(administrator=True)
-    async def announce_clear(
+    @app_commands.default_permissions(administrator=True)
+    async def clear_channel(
         self,
         interaction: discord.Interaction,
         channel: discord.TextChannel,
