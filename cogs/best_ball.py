@@ -2,9 +2,9 @@
 Best Ball Fantasy Football Cog
 Features:
 - Create and manage Best Ball events
-- Roster building with player selection
+- Roster building with autocomplete player search
 - Automatic weekly lineup optimization
-- PPR scoring based on Madden sim stats
+- PPR scoring based on Madden sim stats (via Snallabot)
 - Loser-pays-winner payout system (bottom pays top)
 - Integration with wager/payment tracking
 """
@@ -23,6 +23,17 @@ import re
 
 logger = logging.getLogger('MistressLIV.BestBall')
 
+# Snallabot API base URL
+SNALLABOT_API_BASE = "https://snallabot.me"
+
+# Madden team ID to abbreviation mapping
+TEAM_ID_TO_ABBR = {
+    0: 'CHI', 1: 'CIN', 2: 'BUF', 3: 'DEN', 4: 'CLE', 5: 'TB', 6: 'ARI', 7: 'LAC',
+    8: 'KC', 9: 'IND', 10: 'DAL', 11: 'MIA', 12: 'PHI', 13: 'ATL', 14: 'SF', 15: 'NYG',
+    16: 'JAX', 17: 'NYJ', 18: 'DET', 19: 'GB', 20: 'CAR', 21: 'NE', 22: 'LV', 23: 'LAR',
+    24: 'BAL', 25: 'WAS', 26: 'NO', 27: 'SEA', 28: 'PIT', 29: 'TEN', 30: 'MIN', 31: 'HOU'
+}
+
 # Scoring constants (PPR)
 SCORING = {
     'passing_yards': 0.04,
@@ -34,15 +45,24 @@ SCORING = {
     'receiving_td': 6,
     'reception': 1,  # PPR
     'two_pt_conversion': 2,
-    'bonus_40_yard_td': 3,
-    'bonus_100_yard_game': 5,
+    'fumble_lost': -2,
+    # Bonuses
+    'bonus_100_rush_yards': 3,
+    'bonus_100_rec_yards': 3,
+    'bonus_300_pass_yards': 3,
     # DST scoring
-    'dst_shutout': 10,
     'dst_sack': 1,
     'dst_interception': 2,
     'dst_fumble_recovery': 2,
     'dst_td': 6,
-    'dst_yards_allowed_per': -0.05,
+    'dst_safety': 2,
+    'dst_points_allowed_0': 10,
+    'dst_points_allowed_1_6': 7,
+    'dst_points_allowed_7_13': 4,
+    'dst_points_allowed_14_20': 1,
+    'dst_points_allowed_21_27': 0,
+    'dst_points_allowed_28_34': -1,
+    'dst_points_allowed_35_plus': -4,
 }
 
 # Roster requirements
@@ -80,7 +100,18 @@ class BestBallCog(commands.Cog):
         self.bot = bot
         self.db_path = bot.db_path
         self._ensure_tables()
-        self.active_roster_builds = {}  # Track users building rosters
+        self.player_cache = []  # Cache of players for autocomplete
+        self.player_cache_time = None
+        
+    def cog_load(self):
+        """Start the weekly scoring task when cog loads."""
+        self.weekly_scoring_task.start()
+        self.refresh_player_cache.start()
+        
+    def cog_unload(self):
+        """Stop tasks when cog unloads."""
+        self.weekly_scoring_task.cancel()
+        self.refresh_player_cache.cancel()
         
     def get_db_connection(self):
         """Get a database connection."""
@@ -95,6 +126,7 @@ class BestBallCog(commands.Cog):
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS bestball_events (
                 event_id TEXT PRIMARY KEY,
+                event_name TEXT,
                 creator_id INTEGER NOT NULL,
                 entry_fee REAL DEFAULT 0,
                 duration_weeks INTEGER DEFAULT 17,
@@ -102,7 +134,8 @@ class BestBallCog(commands.Cog):
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 closed_at TEXT,
                 season INTEGER,
-                current_week INTEGER DEFAULT 0
+                current_week INTEGER DEFAULT 0,
+                start_week INTEGER DEFAULT 1
             )
         ''')
         
@@ -149,6 +182,7 @@ class BestBallCog(commands.Cog):
                 points REAL DEFAULT 0,
                 is_starter INTEGER DEFAULT 0,
                 lineup_position TEXT,
+                stats_json TEXT,
                 FOREIGN KEY (event_id) REFERENCES bestball_events(event_id),
                 UNIQUE(event_id, user_id, week, player_id)
             )
@@ -171,118 +205,330 @@ class BestBallCog(commands.Cog):
             )
         ''')
         
+        # Player cache table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS bestball_player_cache (
+                player_id TEXT PRIMARY KEY,
+                first_name TEXT,
+                last_name TEXT,
+                position TEXT,
+                team_id INTEGER,
+                team_abbr TEXT,
+                overall INTEGER,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
         conn.commit()
         conn.close()
         logger.info("Best Ball tables initialized")
     
-    def _generate_event_id(self, season: int = None) -> str:
-        """Generate a unique event ID."""
-        if season is None:
-            season = datetime.now().year
-        
+    async def _get_snallabot_config(self) -> Optional[Dict]:
+        """Get Snallabot config from database."""
         conn = self.get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('''
-            SELECT COUNT(*) FROM bestball_events 
-            WHERE event_id LIKE ?
-        ''', (f'BB-SZN{season}-%',))
-        count = cursor.fetchone()[0]
-        conn.close()
-        
-        return f"BB-SZN{season}-{count + 1:03d}"
-    
-    async def _get_player_pool(self) -> List[Dict]:
-        """Get all available players from Madden export data."""
-        # Try to get from Snallabot/export data
-        conn = self.get_db_connection()
-        cursor = conn.cursor()
-        
-        # Check for cached player data
-        cursor.execute('''
-            SELECT data FROM snallabot_cache 
-            WHERE cache_key = 'player_roster' 
-            ORDER BY updated_at DESC LIMIT 1
-        ''')
+        cursor.execute('SELECT league_id, platform, current_season FROM snallabot_config LIMIT 1')
         result = cursor.fetchone()
         conn.close()
         
         if result:
-            try:
-                return json.loads(result[0])
-            except:
-                pass
+            return {'league_id': result[0], 'platform': result[1], 'current_season': result[2]}
+        return {'league_id': 'liv', 'platform': 'ps5', 'current_season': 2026}
+    
+    async def _fetch_player_stats(self, platform: str, league_id: str, week: int) -> Optional[List]:
+        """Fetch weekly player stats from Snallabot API."""
+        url = f"{SNALLABOT_API_BASE}/{platform}/{league_id}/{week}/reg/weeklystats"
         
-        # Fallback: try to fetch from Snallabot
         try:
             async with aiohttp.ClientSession() as session:
-                # Get league ID from config
-                conn = self.get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute("SELECT value FROM bot_config WHERE key = 'snallabot_league_id'")
-                result = cursor.fetchone()
-                conn.close()
-                
-                league_id = result[0] if result else 'liv'
-                
-                url = f"https://snallabot-event-sender-b869b2ccfed0.herokuapp.com/dashboard/{league_id}/export"
                 async with session.get(url, timeout=30) as response:
                     if response.status == 200:
                         data = await response.json()
-                        if 'rosters' in data:
-                            return data['rosters']
+                        return data
+                    else:
+                        logger.warning(f"Snallabot API returned {response.status} for weekly stats")
+                        return None
         except Exception as e:
-            logger.error(f"Error fetching player pool: {e}")
-        
-        return []
+            logger.error(f"Error fetching weekly stats: {e}")
+            return None
     
-    def _search_players(self, query: str, players: List[Dict], position: str = None) -> List[Dict]:
-        """Fuzzy search for players by name."""
-        query_lower = query.lower()
-        matches = []
+    async def _fetch_rosters(self, platform: str, league_id: str) -> Optional[List]:
+        """Fetch all rosters/players from Snallabot API."""
+        url = f"{SNALLABOT_API_BASE}/{platform}/{league_id}/rosters"
         
-        for player in players:
-            name = player.get('firstName', '') + ' ' + player.get('lastName', '')
-            name_lower = name.lower()
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=30) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        return data
+                    else:
+                        logger.warning(f"Snallabot API returned {response.status} for rosters")
+                        return None
+        except Exception as e:
+            logger.error(f"Error fetching rosters: {e}")
+            return None
+    
+    @tasks.loop(hours=6)
+    async def refresh_player_cache(self):
+        """Refresh the player cache from Snallabot."""
+        try:
+            config = await self._get_snallabot_config()
+            if not config:
+                return
             
-            # Check position filter
-            if position and player.get('position', '').upper() != position.upper():
-                continue
+            rosters = await self._fetch_rosters(config['platform'], config['league_id'])
+            if not rosters:
+                return
             
-            # Check for match
-            if query_lower in name_lower or name_lower.startswith(query_lower):
-                matches.append({
-                    'id': player.get('rosterId') or player.get('playerId'),
-                    'name': name.strip(),
-                    'position': player.get('position', 'UNK'),
-                    'team': player.get('teamId', 'FA'),
-                    'overall': player.get('playerBestOvr') or player.get('overall', 0)
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+            
+            self.player_cache = []
+            
+            for player in rosters:
+                player_id = str(player.get('rosterId', player.get('playerId', '')))
+                first_name = player.get('firstName', '')
+                last_name = player.get('lastName', '')
+                position = player.get('position', 'UNK')
+                team_id = player.get('teamId', 0)
+                team_abbr = TEAM_ID_TO_ABBR.get(team_id, 'FA')
+                overall = player.get('playerBestOvr', player.get('overall', 0))
+                
+                # Update cache table
+                cursor.execute('''
+                    INSERT OR REPLACE INTO bestball_player_cache 
+                    (player_id, first_name, last_name, position, team_id, team_abbr, overall, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (player_id, first_name, last_name, position, team_id, team_abbr, overall, datetime.now().isoformat()))
+                
+                # Add to memory cache
+                self.player_cache.append({
+                    'id': player_id,
+                    'name': f"{first_name} {last_name}".strip(),
+                    'position': position,
+                    'team': team_abbr,
+                    'overall': overall
                 })
-        
-        # Sort by overall rating
-        matches.sort(key=lambda x: x.get('overall', 0), reverse=True)
-        return matches[:10]  # Return top 10 matches
+            
+            conn.commit()
+            conn.close()
+            self.player_cache_time = datetime.now()
+            logger.info(f"Refreshed player cache with {len(self.player_cache)} players")
+            
+        except Exception as e:
+            logger.error(f"Error refreshing player cache: {e}")
     
-    def _calculate_player_score(self, stats: Dict) -> float:
+    @refresh_player_cache.before_loop
+    async def before_refresh_cache(self):
+        """Wait for bot to be ready before starting cache refresh."""
+        await self.bot.wait_until_ready()
+    
+    @tasks.loop(hours=24)
+    async def weekly_scoring_task(self):
+        """Check for and process weekly scores for active Best Ball events."""
+        try:
+            config = await self._get_snallabot_config()
+            if not config:
+                return
+            
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+            
+            # Get active events
+            cursor.execute('''
+                SELECT event_id, current_week, duration_weeks, start_week
+                FROM bestball_events
+                WHERE status = 'active'
+            ''')
+            active_events = cursor.fetchall()
+            
+            for event_id, current_week, duration_weeks, start_week in active_events:
+                # Calculate the Madden week to check
+                madden_week = (start_week or 1) + current_week
+                
+                if current_week >= duration_weeks:
+                    # Event is complete
+                    continue
+                
+                # Fetch stats for this week
+                stats = await self._fetch_player_stats(config['platform'], config['league_id'], madden_week)
+                if not stats:
+                    continue
+                
+                # Process scores for each participant
+                await self._process_weekly_scores(event_id, current_week + 1, stats)
+                
+                # Update current week
+                cursor.execute('''
+                    UPDATE bestball_events SET current_week = ? WHERE event_id = ?
+                ''', (current_week + 1, event_id))
+                
+                # Check if event is now complete
+                if current_week + 1 >= duration_weeks:
+                    cursor.execute('''
+                        UPDATE bestball_events SET status = 'completed' WHERE event_id = ?
+                    ''', (event_id,))
+                    
+                    # Generate payments
+                    self._generate_payments(event_id)
+                    
+                    # Notify in best-ball channel
+                    for guild in self.bot.guilds:
+                        channel = discord.utils.get(guild.channels, name='best-ball')
+                        if channel:
+                            await channel.send(
+                                f"🏆 **Best Ball Event `{event_id}` Complete!**\n"
+                                f"Use `/bestballstatus {event_id}` to see final standings and payments!"
+                            )
+            
+            conn.commit()
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Error in weekly scoring task: {e}")
+    
+    @weekly_scoring_task.before_loop
+    async def before_weekly_scoring(self):
+        """Wait for bot to be ready before starting scoring task."""
+        await self.bot.wait_until_ready()
+    
+    async def _process_weekly_scores(self, event_id: str, week: int, stats: List):
+        """Process weekly stats and calculate fantasy points for all participants."""
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get all participants and their rosters
+        cursor.execute('''
+            SELECT DISTINCT user_id FROM bestball_participants WHERE event_id = ?
+        ''', (event_id,))
+        participants = cursor.fetchall()
+        
+        # Build stats lookup by player ID
+        stats_by_player = {}
+        for stat in stats:
+            player_id = str(stat.get('rosterId', stat.get('playerId', '')))
+            stats_by_player[player_id] = stat
+        
+        for (user_id,) in participants:
+            # Get user's roster
+            cursor.execute('''
+                SELECT player_id, player_name, position
+                FROM bestball_rosters
+                WHERE event_id = ? AND user_id = ?
+            ''', (event_id, user_id))
+            roster = cursor.fetchall()
+            
+            roster_scores = []
+            
+            for player_id, player_name, position in roster:
+                player_stats = stats_by_player.get(player_id, {})
+                points = self._calculate_player_score(player_stats, position)
+                
+                roster_scores.append({
+                    'player_id': player_id,
+                    'player_name': player_name,
+                    'position': position,
+                    'points': points,
+                    'stats': player_stats
+                })
+            
+            # Optimize lineup
+            starters, bench = self._optimize_lineup(roster_scores)
+            
+            # Calculate totals
+            starter_points = sum(p['points'] for p in starters)
+            bench_points = sum(p['points'] for p in bench)
+            total_tds = sum(
+                p['stats'].get('rushTDs', 0) + p['stats'].get('recTDs', 0) + p['stats'].get('passTDs', 0)
+                for p in roster_scores
+            )
+            
+            # Save weekly scores
+            for player in starters:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO bestball_weekly_scores
+                    (event_id, user_id, week, player_id, points, is_starter, lineup_position, stats_json)
+                    VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                ''', (event_id, user_id, week, player['player_id'], player['points'],
+                      player.get('lineup_position', ''), json.dumps(player['stats'])))
+            
+            for player in bench:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO bestball_weekly_scores
+                    (event_id, user_id, week, player_id, points, is_starter, lineup_position, stats_json)
+                    VALUES (?, ?, ?, ?, ?, 0, 'BENCH', ?)
+                ''', (event_id, user_id, week, player['player_id'], player['points'], json.dumps(player['stats'])))
+            
+            # Update participant totals
+            cursor.execute('''
+                UPDATE bestball_participants
+                SET total_points = total_points + ?,
+                    total_bench_points = total_bench_points + ?,
+                    total_tds = total_tds + ?
+                WHERE event_id = ? AND user_id = ?
+            ''', (starter_points, bench_points, total_tds, event_id, user_id))
+        
+        conn.commit()
+        conn.close()
+    
+    def _calculate_player_score(self, stats: Dict, position: str) -> float:
         """Calculate fantasy points for a player based on their stats."""
         points = 0.0
         
-        # Passing
-        points += stats.get('passYds', 0) * SCORING['passing_yards']
-        points += stats.get('passTDs', 0) * SCORING['passing_td']
-        points += stats.get('passInts', 0) * SCORING['interception']
-        
-        # Rushing
-        points += stats.get('rushYds', 0) * SCORING['rushing_yards']
-        points += stats.get('rushTDs', 0) * SCORING['rushing_td']
-        
-        # Receiving
-        points += stats.get('recYds', 0) * SCORING['receiving_yards']
-        points += stats.get('recTDs', 0) * SCORING['receiving_td']
-        points += stats.get('receptions', 0) * SCORING['reception']
-        
-        # Bonuses
-        if stats.get('rushYds', 0) >= 100 or stats.get('recYds', 0) >= 100 or stats.get('passYds', 0) >= 300:
-            points += SCORING['bonus_100_yard_game']
+        if position == 'DST':
+            # DST scoring
+            points += stats.get('defSacks', 0) * SCORING['dst_sack']
+            points += stats.get('defInts', 0) * SCORING['dst_interception']
+            points += stats.get('defForcedFum', 0) * SCORING['dst_fumble_recovery']
+            points += stats.get('defTDs', 0) * SCORING['dst_td']
+            points += stats.get('defSafeties', 0) * SCORING['dst_safety']
+            
+            # Points allowed scoring
+            pts_allowed = stats.get('defPtsPerGame', stats.get('ptsAllowed', 0))
+            if pts_allowed == 0:
+                points += SCORING['dst_points_allowed_0']
+            elif pts_allowed <= 6:
+                points += SCORING['dst_points_allowed_1_6']
+            elif pts_allowed <= 13:
+                points += SCORING['dst_points_allowed_7_13']
+            elif pts_allowed <= 20:
+                points += SCORING['dst_points_allowed_14_20']
+            elif pts_allowed <= 27:
+                points += SCORING['dst_points_allowed_21_27']
+            elif pts_allowed <= 34:
+                points += SCORING['dst_points_allowed_28_34']
+            else:
+                points += SCORING['dst_points_allowed_35_plus']
+        else:
+            # Offensive player scoring
+            # Passing
+            pass_yds = stats.get('passYds', 0)
+            points += pass_yds * SCORING['passing_yards']
+            points += stats.get('passTDs', 0) * SCORING['passing_td']
+            points += stats.get('passInts', 0) * SCORING['interception']
+            
+            # Rushing
+            rush_yds = stats.get('rushYds', 0)
+            points += rush_yds * SCORING['rushing_yards']
+            points += stats.get('rushTDs', 0) * SCORING['rushing_td']
+            
+            # Receiving
+            rec_yds = stats.get('recYds', 0)
+            points += rec_yds * SCORING['receiving_yards']
+            points += stats.get('recTDs', 0) * SCORING['receiving_td']
+            points += stats.get('recCatches', stats.get('receptions', 0)) * SCORING['reception']
+            
+            # Fumbles
+            points += stats.get('fumLost', 0) * SCORING['fumble_lost']
+            
+            # Bonuses
+            if rush_yds >= 100:
+                points += SCORING['bonus_100_rush_yards']
+            if rec_yds >= 100:
+                points += SCORING['bonus_100_rec_yards']
+            if pass_yds >= 300:
+                points += SCORING['bonus_300_pass_yards']
         
         return round(points, 2)
     
@@ -299,8 +545,6 @@ class BestBallCog(commands.Cog):
                 by_position[pos].append(player)
             elif pos in ['HB', 'FB']:
                 by_position['RB'].append(player)
-            elif pos == 'K':
-                continue  # Skip kickers
         
         # Sort each position by points
         for pos in by_position:
@@ -404,50 +648,212 @@ class BestBallCog(commands.Cog):
         
         return payments
     
+    def _get_roster_status(self, event_id: str, user_id: int) -> Dict:
+        """Get current roster status including counts by position."""
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT position, COUNT(*) 
+            FROM bestball_rosters
+            WHERE event_id = ? AND user_id = ?
+            GROUP BY position
+        ''', (event_id, user_id))
+        
+        position_counts = dict(cursor.fetchall())
+        conn.close()
+        
+        total = sum(position_counts.values())
+        remaining = ROSTER_SIZE - total
+        
+        # Calculate what's still needed
+        needs = {}
+        for pos, min_count in MIN_ROSTER.items():
+            current = position_counts.get(pos, 0)
+            if current < min_count:
+                needs[pos] = min_count - current
+        
+        # Calculate what's still available
+        available = {}
+        for pos, max_count in MAX_ROSTER.items():
+            current = position_counts.get(pos, 0)
+            if current < max_count:
+                available[pos] = max_count - current
+        
+        return {
+            'total': total,
+            'remaining': remaining,
+            'by_position': position_counts,
+            'needs': needs,
+            'available': available
+        }
+    
+    def _generate_event_id(self, season: int = None) -> str:
+        """Generate a unique event ID."""
+        if season is None:
+            season = datetime.now().year
+        
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT COUNT(*) FROM bestball_events 
+            WHERE event_id LIKE ?
+        ''', (f'BB-SZN{season}-%',))
+        count = cursor.fetchone()[0]
+        conn.close()
+        
+        return f"BB-SZN{season}-{count + 1:03d}"
+    
+    # ==================== AUTOCOMPLETE ====================
+    
+    async def player_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str
+    ) -> List[app_commands.Choice[str]]:
+        """Autocomplete for player names."""
+        if not self.player_cache:
+            # Load from database if memory cache is empty
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT player_id, first_name, last_name, position, team_abbr, overall
+                FROM bestball_player_cache
+                ORDER BY overall DESC
+                LIMIT 500
+            ''')
+            rows = cursor.fetchall()
+            conn.close()
+            
+            self.player_cache = [
+                {
+                    'id': row[0],
+                    'name': f"{row[1]} {row[2]}".strip(),
+                    'position': row[3],
+                    'team': row[4],
+                    'overall': row[5]
+                }
+                for row in rows
+            ]
+        
+        if not current:
+            # Return top players by overall
+            return [
+                app_commands.Choice(
+                    name=f"{p['name']} ({p['position']} - {p['team']})",
+                    value=p['id']
+                )
+                for p in self.player_cache[:25]
+            ]
+        
+        # Filter by search term
+        current_lower = current.lower()
+        matches = [
+            p for p in self.player_cache
+            if current_lower in p['name'].lower()
+        ]
+        
+        # Sort by relevance (starts with > contains) then by overall
+        matches.sort(key=lambda p: (
+            not p['name'].lower().startswith(current_lower),
+            -p['overall']
+        ))
+        
+        return [
+            app_commands.Choice(
+                name=f"{p['name']} ({p['position']} - {p['team']})",
+                value=p['id']
+            )
+            for p in matches[:25]
+        ]
+    
+    async def event_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str
+    ) -> List[app_commands.Choice[str]]:
+        """Autocomplete for event selection - shows creator name and event details."""
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT event_id, event_name, creator_id, entry_fee, status,
+                   (SELECT COUNT(*) FROM bestball_participants WHERE event_id = e.event_id) as participants
+            FROM bestball_events e
+            ORDER BY created_at DESC
+            LIMIT 25
+        ''')
+        events = cursor.fetchall()
+        conn.close()
+        
+        choices = []
+        for event_id, event_name, creator_id, entry_fee, status, participants in events:
+            # Get creator name
+            member = interaction.guild.get_member(creator_id)
+            creator_name = member.display_name if member else f"User {creator_id}"
+            
+            # Build display name
+            display_name = event_name or event_id
+            label = f"{display_name} by {creator_name} (${entry_fee:.0f}, {participants} players, {status})"
+            
+            # Filter by current search
+            if current and current.lower() not in label.lower():
+                continue
+            
+            choices.append(app_commands.Choice(name=label[:100], value=event_id))
+        
+        return choices[:25]
+    
     # ==================== COMMANDS ====================
     
     @app_commands.command(name="startbestball", description="Start a new Best Ball event")
     @app_commands.describe(
+        event_name="Name for this event (e.g., 'Season 5 Best Ball')",
         entry_fee="Entry fee amount (default: $50)",
-        duration_weeks="Number of weeks to run (default: 17)"
+        duration_weeks="Number of weeks to run (default: 17)",
+        start_week="Madden week to start scoring from (default: 1)"
     )
     async def start_best_ball(
         self,
         interaction: discord.Interaction,
+        event_name: Optional[str] = None,
         entry_fee: Optional[float] = 50.0,
-        duration_weeks: Optional[int] = 17
+        duration_weeks: Optional[int] = 17,
+        start_week: Optional[int] = 1
     ):
         """Create a new Best Ball event."""
         await interaction.response.defer()
         
         event_id = self._generate_event_id()
+        if not event_name:
+            event_name = f"{interaction.user.display_name}'s Best Ball"
         
         conn = self.get_db_connection()
         cursor = conn.cursor()
         
         cursor.execute('''
             INSERT INTO bestball_events 
-            (event_id, creator_id, entry_fee, duration_weeks, status, season)
-            VALUES (?, ?, ?, ?, 'open', ?)
-        ''', (event_id, interaction.user.id, entry_fee, duration_weeks, datetime.now().year))
+            (event_id, event_name, creator_id, entry_fee, duration_weeks, status, season, start_week)
+            VALUES (?, ?, ?, ?, ?, 'open', ?, ?)
+        ''', (event_id, event_name, interaction.user.id, entry_fee, duration_weeks, datetime.now().year, start_week))
         
         conn.commit()
         conn.close()
         
         embed = discord.Embed(
             title="🏈 New Best Ball Event Started!",
-            description=f"**Event ID:** `{event_id}`",
+            description=f"**{event_name}**\n`{event_id}`",
             color=discord.Color.green(),
             timestamp=datetime.now()
         )
         
         embed.add_field(name="💰 Entry Fee", value=f"${entry_fee:.2f}", inline=True)
         embed.add_field(name="📅 Duration", value=f"{duration_weeks} weeks", inline=True)
-        embed.add_field(name="📊 Status", value="Open for joins", inline=True)
+        embed.add_field(name="🏁 Start Week", value=f"Week {start_week}", inline=True)
         
         embed.add_field(
             name="📋 How to Join",
-            value=f"Use `/joinbestball {event_id}` to join!\n1 entry per person.",
+            value=f"Use `/joinbestball` and select this event!\n1 entry per person.",
             inline=False
         )
         
@@ -476,30 +882,33 @@ class BestBallCog(commands.Cog):
             )
     
     @app_commands.command(name="joinbestball", description="Join a Best Ball event")
-    @app_commands.describe(event_id="The event ID to join")
-    async def join_best_ball(self, interaction: discord.Interaction, event_id: str):
+    @app_commands.describe(event="Select the event to join")
+    @app_commands.autocomplete(event=event_autocomplete)
+    async def join_best_ball(self, interaction: discord.Interaction, event: str):
         """Join an existing Best Ball event."""
+        event_id = event  # The autocomplete returns the event_id as value
+        
         conn = self.get_db_connection()
         cursor = conn.cursor()
         
         # Check event exists and is open
         cursor.execute('''
-            SELECT status, entry_fee FROM bestball_events WHERE event_id = ?
+            SELECT status, entry_fee, event_name FROM bestball_events WHERE event_id = ?
         ''', (event_id,))
         result = cursor.fetchone()
         
         if not result:
             await interaction.response.send_message(
-                f"❌ Event `{event_id}` not found.", ephemeral=True
+                f"❌ Event not found.", ephemeral=True
             )
             conn.close()
             return
         
-        status, entry_fee = result
+        status, entry_fee, event_name = result
         
         if status != 'open':
             await interaction.response.send_message(
-                f"❌ Event `{event_id}` is no longer accepting participants (Status: {status}).",
+                f"❌ This event is no longer accepting participants (Status: {status}).",
                 ephemeral=True
             )
             conn.close()
@@ -529,29 +938,32 @@ class BestBallCog(commands.Cog):
         
         embed = discord.Embed(
             title="✅ Joined Best Ball Event!",
-            description=f"**Event ID:** `{event_id}`",
+            description=f"**{event_name}**",
             color=discord.Color.green()
         )
         
         embed.add_field(name="💰 Entry Fee", value=f"${entry_fee:.2f}", inline=True)
         embed.add_field(
             name="📋 Next Step",
-            value=f"Build your roster with `/selectyourteam {event_id}`",
+            value=f"Build your roster with `/selectyourteam`",
             inline=False
         )
         
         await interaction.response.send_message(embed=embed)
     
     @app_commands.command(name="selectyourteam", description="Build your Best Ball roster")
-    @app_commands.describe(event_id="The event ID to build roster for")
-    async def select_your_team(self, interaction: discord.Interaction, event_id: str):
-        """Interactive roster building."""
+    @app_commands.describe(event="Select the event to build roster for")
+    @app_commands.autocomplete(event=event_autocomplete)
+    async def select_your_team(self, interaction: discord.Interaction, event: str):
+        """Interactive roster building with progress tracking."""
+        event_id = event
+        
         conn = self.get_db_connection()
         cursor = conn.cursor()
         
         # Verify participation
         cursor.execute('''
-            SELECT p.id, e.status FROM bestball_participants p
+            SELECT p.id, e.status, e.event_name FROM bestball_participants p
             JOIN bestball_events e ON p.event_id = e.event_id
             WHERE p.event_id = ? AND p.user_id = ?
         ''', (event_id, interaction.user.id))
@@ -559,13 +971,13 @@ class BestBallCog(commands.Cog):
         
         if not result:
             await interaction.response.send_message(
-                f"❌ You haven't joined event `{event_id}`. Use `/joinbestball {event_id}` first.",
+                f"❌ You haven't joined this event. Use `/joinbestball` first.",
                 ephemeral=True
             )
             conn.close()
             return
         
-        _, status = result
+        _, status, event_name = result
         if status != 'open':
             await interaction.response.send_message(
                 "❌ This event is closed. Rosters can no longer be modified.",
@@ -574,75 +986,213 @@ class BestBallCog(commands.Cog):
             conn.close()
             return
         
-        # Check current roster
-        cursor.execute('''
-            SELECT COUNT(*) FROM bestball_rosters
-            WHERE event_id = ? AND user_id = ?
-        ''', (event_id, interaction.user.id))
-        roster_count = cursor.fetchone()[0]
         conn.close()
         
-        if roster_count >= ROSTER_SIZE:
+        # Get roster status
+        roster_status = self._get_roster_status(event_id, interaction.user.id)
+        
+        if roster_status['total'] >= ROSTER_SIZE:
             await interaction.response.send_message(
-                f"✅ Your roster is complete ({roster_count}/{ROSTER_SIZE} players).\n"
-                f"Use `/reviewbestballroster {event_id}` to view it.",
+                f"✅ Your roster is complete ({roster_status['total']}/{ROSTER_SIZE} players).\n"
+                f"Use `/reviewbestballroster` to view it.",
                 ephemeral=True
             )
             return
         
-        # Start roster building view
-        view = RosterBuildView(self, interaction.user.id, event_id, roster_count)
-        
+        # Build status embed
         embed = discord.Embed(
-            title=f"🏈 Build Your Best Ball Roster",
-            description=f"**Event:** `{event_id}`\n**Progress:** {roster_count}/{ROSTER_SIZE} players",
+            title=f"🏈 Build Your Roster: {event_name}",
+            description=f"**Progress:** {roster_status['total']}/{ROSTER_SIZE} players ({roster_status['remaining']} remaining)",
             color=discord.Color.blue()
         )
         
+        # Current roster by position
+        pos_status = []
+        for pos in ['QB', 'RB', 'WR', 'TE', 'DST']:
+            current = roster_status['by_position'].get(pos, 0)
+            min_req = MIN_ROSTER.get(pos, 0)
+            max_req = MAX_ROSTER.get(pos, 0)
+            
+            if current < min_req:
+                status_emoji = "❌"
+            elif current >= max_req:
+                status_emoji = "✅"
+            else:
+                status_emoji = "⚠️"
+            
+            pos_status.append(f"{status_emoji} **{pos}:** {current}/{max_req} (min: {min_req})")
+        
         embed.add_field(
-            name="📋 Roster Requirements",
-            value=(
-                f"• QB: {MIN_ROSTER['QB']}-{MAX_ROSTER['QB']}\n"
-                f"• RB: {MIN_ROSTER['RB']}-{MAX_ROSTER['RB']}\n"
-                f"• WR: {MIN_ROSTER['WR']}-{MAX_ROSTER['WR']}\n"
-                f"• TE: {MIN_ROSTER['TE']}-{MAX_ROSTER['TE']}\n"
-                f"• DST: 0-{MAX_ROSTER['DST']}\n"
-                f"• Total: {ROSTER_SIZE} players"
-            ),
+            name="📊 Roster Status",
+            value="\n".join(pos_status),
             inline=False
         )
         
+        # What's still needed
+        if roster_status['needs']:
+            needs_text = ", ".join([f"{count} {pos}" for pos, count in roster_status['needs'].items()])
+            embed.add_field(
+                name="⚠️ Still Need",
+                value=needs_text,
+                inline=False
+            )
+        
         embed.add_field(
-            name="🎯 Select Position",
-            value="Choose a position below to add a player:",
+            name="🔍 Add Players",
+            value="Use `/addplayer` and start typing a player name to search!",
             inline=False
         )
         
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
     
     @app_commands.command(name="addplayer", description="Add a player to your Best Ball roster")
     @app_commands.describe(
-        event_id="The event ID",
-        position="Player position (QB, RB, WR, TE, DST)",
-        player_name="Player name to search for"
+        event="Select the event",
+        player="Search for a player by name"
     )
+    @app_commands.autocomplete(event=event_autocomplete, player=player_autocomplete)
     async def add_player(
         self,
         interaction: discord.Interaction,
-        event_id: str,
-        position: str,
-        player_name: str
+        event: str,
+        player: str
     ):
-        """Add a player to roster by name search."""
-        await interaction.response.defer(ephemeral=True)
+        """Add a player to roster with autocomplete search."""
+        event_id = event
+        player_id = player  # This is the player ID from autocomplete
         
-        position = position.upper()
-        if position not in ['QB', 'RB', 'WR', 'TE', 'DST', 'FLEX']:
-            await interaction.followup.send(
-                "❌ Invalid position. Use QB, RB, WR, TE, or DST.",
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Verify participation and event status
+        cursor.execute('''
+            SELECT e.status, e.event_name FROM bestball_participants p
+            JOIN bestball_events e ON p.event_id = e.event_id
+            WHERE p.event_id = ? AND p.user_id = ?
+        ''', (event_id, interaction.user.id))
+        result = cursor.fetchone()
+        
+        if not result:
+            await interaction.response.send_message(
+                f"❌ You haven't joined this event.",
                 ephemeral=True
             )
+            conn.close()
             return
+        
+        status, event_name = result
+        if status != 'open':
+            await interaction.response.send_message(
+                "❌ This event is closed. Rosters cannot be modified.",
+                ephemeral=True
+            )
+            conn.close()
+            return
+        
+        # Get player info from cache
+        cursor.execute('''
+            SELECT player_id, first_name, last_name, position, team_abbr, overall
+            FROM bestball_player_cache WHERE player_id = ?
+        ''', (player_id,))
+        player_data = cursor.fetchone()
+        
+        if not player_data:
+            await interaction.response.send_message(
+                "❌ Player not found. Try refreshing the player list.",
+                ephemeral=True
+            )
+            conn.close()
+            return
+        
+        player_id, first_name, last_name, position, team_abbr, overall = player_data
+        player_name = f"{first_name} {last_name}".strip()
+        
+        # Check roster limits
+        roster_status = self._get_roster_status(event_id, interaction.user.id)
+        
+        if roster_status['total'] >= ROSTER_SIZE:
+            await interaction.response.send_message(
+                f"❌ Your roster is full ({ROSTER_SIZE} players).",
+                ephemeral=True
+            )
+            conn.close()
+            return
+        
+        pos_upper = position.upper()
+        if pos_upper in ['HB', 'FB']:
+            pos_upper = 'RB'
+        
+        if pos_upper in MAX_ROSTER:
+            current_count = roster_status['by_position'].get(pos_upper, 0)
+            if current_count >= MAX_ROSTER[pos_upper]:
+                await interaction.response.send_message(
+                    f"❌ You already have {current_count} {pos_upper}s (max: {MAX_ROSTER[pos_upper]}).",
+                    ephemeral=True
+                )
+                conn.close()
+                return
+        
+        # Check if player already on roster
+        cursor.execute('''
+            SELECT id FROM bestball_rosters
+            WHERE event_id = ? AND user_id = ? AND player_id = ?
+        ''', (event_id, interaction.user.id, player_id))
+        
+        if cursor.fetchone():
+            await interaction.response.send_message(
+                f"❌ {player_name} is already on your roster.",
+                ephemeral=True
+            )
+            conn.close()
+            return
+        
+        # Add player
+        cursor.execute('''
+            INSERT INTO bestball_rosters 
+            (event_id, user_id, player_id, player_name, position, team)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (event_id, interaction.user.id, player_id, player_name, pos_upper, team_abbr))
+        
+        conn.commit()
+        conn.close()
+        
+        # Get updated roster status
+        new_status = self._get_roster_status(event_id, interaction.user.id)
+        
+        embed = discord.Embed(
+            title="✅ Player Added!",
+            description=f"**{player_name}** ({pos_upper} - {team_abbr})",
+            color=discord.Color.green()
+        )
+        
+        embed.add_field(
+            name="📊 Roster Progress",
+            value=f"{new_status['total']}/{ROSTER_SIZE} players ({new_status['remaining']} remaining)",
+            inline=False
+        )
+        
+        if new_status['needs']:
+            needs_text = ", ".join([f"{count} {pos}" for pos, count in new_status['needs'].items()])
+            embed.add_field(name="⚠️ Still Need", value=needs_text, inline=False)
+        elif new_status['remaining'] == 0:
+            embed.add_field(name="🎉 Roster Complete!", value="Your roster is ready!", inline=False)
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    @app_commands.command(name="removeplayer", description="Remove a player from your Best Ball roster")
+    @app_commands.describe(
+        event="Select the event",
+        player_name="Name of player to remove"
+    )
+    @app_commands.autocomplete(event=event_autocomplete)
+    async def remove_player(
+        self,
+        interaction: discord.Interaction,
+        event: str,
+        player_name: str
+    ):
+        """Remove a player from roster."""
+        event_id = event
         
         conn = self.get_db_connection()
         cursor = conn.cursor()
@@ -655,144 +1205,57 @@ class BestBallCog(commands.Cog):
         ''', (event_id, interaction.user.id))
         result = cursor.fetchone()
         
-        if not result:
-            await interaction.followup.send(
-                f"❌ You haven't joined event `{event_id}`.",
+        if not result or result[0] != 'open':
+            await interaction.response.send_message(
+                "❌ Cannot modify roster (not joined or event closed).",
                 ephemeral=True
             )
             conn.close()
             return
         
-        if result[0] != 'open':
-            await interaction.followup.send(
-                "❌ This event is closed. Rosters cannot be modified.",
-                ephemeral=True
-            )
-            conn.close()
-            return
-        
-        # Check roster count
+        # Find and remove player
         cursor.execute('''
-            SELECT COUNT(*) FROM bestball_rosters
-            WHERE event_id = ? AND user_id = ?
-        ''', (event_id, interaction.user.id))
-        roster_count = cursor.fetchone()[0]
+            DELETE FROM bestball_rosters
+            WHERE event_id = ? AND user_id = ? AND LOWER(player_name) LIKE ?
+        ''', (event_id, interaction.user.id, f"%{player_name.lower()}%"))
         
-        if roster_count >= ROSTER_SIZE:
-            await interaction.followup.send(
-                f"❌ Your roster is full ({ROSTER_SIZE} players).",
+        if cursor.rowcount > 0:
+            conn.commit()
+            await interaction.response.send_message(
+                f"✅ Removed player matching '{player_name}' from your roster.",
                 ephemeral=True
             )
-            conn.close()
-            return
-        
-        # Check position limits
-        cursor.execute('''
-            SELECT COUNT(*) FROM bestball_rosters
-            WHERE event_id = ? AND user_id = ? AND position = ?
-        ''', (event_id, interaction.user.id, position))
-        pos_count = cursor.fetchone()[0]
-        
-        if position in MAX_ROSTER and pos_count >= MAX_ROSTER[position]:
-            await interaction.followup.send(
-                f"❌ You already have {pos_count} {position}s (max: {MAX_ROSTER[position]}).",
+        else:
+            await interaction.response.send_message(
+                f"❌ No player found matching '{player_name}' on your roster.",
                 ephemeral=True
             )
-            conn.close()
-            return
         
         conn.close()
-        
-        # Search for player
-        players = await self._get_player_pool()
-        search_pos = None if position == 'FLEX' else position
-        matches = self._search_players(player_name, players, search_pos)
-        
-        if not matches:
-            await interaction.followup.send(
-                f"❌ No players found matching '{player_name}' at {position}.",
-                ephemeral=True
-            )
-            return
-        
-        if len(matches) == 1:
-            # Auto-add single match
-            player = matches[0]
-            success = await self._add_player_to_roster(
-                event_id, interaction.user.id, player
-            )
-            
-            if success:
-                await interaction.followup.send(
-                    f"✅ Added **{player['name']}** ({player['position']} - {player['team']}) to your roster!",
-                    ephemeral=True
-                )
-            else:
-                await interaction.followup.send(
-                    f"❌ Failed to add player. They may already be on your roster.",
-                    ephemeral=True
-                )
-        else:
-            # Show selection view
-            view = PlayerSelectView(self, event_id, interaction.user.id, matches)
-            
-            embed = discord.Embed(
-                title=f"🔍 Select Player",
-                description=f"Multiple matches for '{player_name}':",
-                color=discord.Color.blue()
-            )
-            
-            for i, p in enumerate(matches, 1):
-                embed.add_field(
-                    name=f"{i}. {p['name']}",
-                    value=f"{p['position']} - {p['team']} ({p['overall']} OVR)",
-                    inline=True
-                )
-            
-            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-    
-    async def _add_player_to_roster(
-        self,
-        event_id: str,
-        user_id: int,
-        player: Dict
-    ) -> bool:
-        """Add a player to a user's roster."""
-        conn = self.get_db_connection()
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute('''
-                INSERT INTO bestball_rosters 
-                (event_id, user_id, player_id, player_name, position, team)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (
-                event_id, user_id, player['id'], player['name'],
-                player['position'], player['team']
-            ))
-            conn.commit()
-            conn.close()
-            return True
-        except sqlite3.IntegrityError:
-            conn.close()
-            return False
     
     @app_commands.command(name="reviewbestballroster", description="View a Best Ball roster")
     @app_commands.describe(
-        event_id="The event ID",
+        event="Select the event",
         user="User to view (leave blank for your own)"
     )
+    @app_commands.autocomplete(event=event_autocomplete)
     async def review_roster(
         self,
         interaction: discord.Interaction,
-        event_id: str,
+        event: str,
         user: Optional[discord.Member] = None
     ):
         """View a participant's roster."""
+        event_id = event
         target_user = user or interaction.user
         
         conn = self.get_db_connection()
         cursor = conn.cursor()
+        
+        # Get event name
+        cursor.execute('SELECT event_name FROM bestball_events WHERE event_id = ?', (event_id,))
+        event_result = cursor.fetchone()
+        event_name = event_result[0] if event_result else event_id
         
         # Get roster
         cursor.execute('''
@@ -815,14 +1278,14 @@ class BestBallCog(commands.Cog):
         
         if not roster:
             await interaction.response.send_message(
-                f"❌ No roster found for {target_user.display_name} in event `{event_id}`.",
+                f"❌ No roster found for {target_user.display_name} in this event.",
                 ephemeral=True
             )
             return
         
         embed = discord.Embed(
-            title=f"🏈 {target_user.display_name}'s Best Ball Roster",
-            description=f"**Event:** `{event_id}`\n**Players:** {len(roster)}/{ROSTER_SIZE}",
+            title=f"🏈 {target_user.display_name}'s Roster",
+            description=f"**{event_name}**\n**Players:** {len(roster)}/{ROSTER_SIZE}",
             color=discord.Color.blue()
         )
         
@@ -843,33 +1306,34 @@ class BestBallCog(commands.Cog):
         
         await interaction.response.send_message(embed=embed)
     
-    @app_commands.command(name="bestballstatus", description="Check Best Ball event status")
-    @app_commands.describe(event_id="Event ID (leave blank for latest)")
+    @app_commands.command(name="bestballstatus", description="Check Best Ball event status and leaderboard")
+    @app_commands.describe(event="Select an event (leave blank for latest)")
+    @app_commands.autocomplete(event=event_autocomplete)
     async def best_ball_status(
         self,
         interaction: discord.Interaction,
-        event_id: Optional[str] = None
+        event: Optional[str] = None
     ):
         """Show event status and leaderboard."""
         conn = self.get_db_connection()
         cursor = conn.cursor()
         
         # Get event
-        if event_id:
+        if event:
             cursor.execute('''
-                SELECT event_id, creator_id, entry_fee, duration_weeks, status, current_week
+                SELECT event_id, event_name, creator_id, entry_fee, duration_weeks, status, current_week
                 FROM bestball_events WHERE event_id = ?
-            ''', (event_id,))
+            ''', (event,))
         else:
             cursor.execute('''
-                SELECT event_id, creator_id, entry_fee, duration_weeks, status, current_week
+                SELECT event_id, event_name, creator_id, entry_fee, duration_weeks, status, current_week
                 FROM bestball_events 
                 ORDER BY created_at DESC LIMIT 1
             ''')
         
-        event = cursor.fetchone()
+        event_data = cursor.fetchone()
         
-        if not event:
+        if not event_data:
             await interaction.response.send_message(
                 "❌ No Best Ball events found.",
                 ephemeral=True
@@ -877,7 +1341,7 @@ class BestBallCog(commands.Cog):
             conn.close()
             return
         
-        event_id, creator_id, entry_fee, duration_weeks, status, current_week = event
+        event_id, event_name, creator_id, entry_fee, duration_weeks, status, current_week = event_data
         
         # Get participants
         cursor.execute('''
@@ -900,7 +1364,8 @@ class BestBallCog(commands.Cog):
         creator_name = creator.display_name if creator else "Unknown"
         
         embed = discord.Embed(
-            title=f"🏈 Best Ball Event: {event_id}",
+            title=f"🏈 {event_name}",
+            description=f"`{event_id}`",
             color=discord.Color.gold() if status == 'open' else discord.Color.blue()
         )
         
@@ -940,28 +1405,31 @@ class BestBallCog(commands.Cog):
         
         await interaction.response.send_message(embed=embed)
     
-    @app_commands.command(name="closebestball", description="[Admin] Close a Best Ball event")
-    @app_commands.describe(event_id="Event ID to close")
-    async def close_best_ball(self, interaction: discord.Interaction, event_id: str):
+    @app_commands.command(name="closebestball", description="[Admin] Close a Best Ball event and start scoring")
+    @app_commands.describe(event="Select the event to close")
+    @app_commands.autocomplete(event=event_autocomplete)
+    async def close_best_ball(self, interaction: discord.Interaction, event: str):
         """Close an event and lock rosters."""
+        event_id = event
+        
         conn = self.get_db_connection()
         cursor = conn.cursor()
         
         # Check if user is creator or admin
         cursor.execute('''
-            SELECT creator_id, status FROM bestball_events WHERE event_id = ?
+            SELECT creator_id, status, event_name FROM bestball_events WHERE event_id = ?
         ''', (event_id,))
         result = cursor.fetchone()
         
         if not result:
             await interaction.response.send_message(
-                f"❌ Event `{event_id}` not found.",
+                f"❌ Event not found.",
                 ephemeral=True
             )
             conn.close()
             return
         
-        creator_id, status = result
+        creator_id, status, event_name = result
         
         if interaction.user.id != creator_id and not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message(
@@ -990,30 +1458,34 @@ class BestBallCog(commands.Cog):
         conn.close()
         
         await interaction.response.send_message(
-            f"✅ Event `{event_id}` is now closed. Rosters are locked and scoring will begin!"
+            f"✅ **{event_name}** is now closed!\n"
+            f"Rosters are locked and automated weekly scoring will begin."
         )
     
     @app_commands.command(name="endbestball", description="[Admin] End a Best Ball event and generate payments")
-    @app_commands.describe(event_id="Event ID to end")
-    async def end_best_ball(self, interaction: discord.Interaction, event_id: str):
+    @app_commands.describe(event="Select the event to end")
+    @app_commands.autocomplete(event=event_autocomplete)
+    async def end_best_ball(self, interaction: discord.Interaction, event: str):
         """End an event and generate payment obligations."""
         await interaction.response.defer()
+        
+        event_id = event
         
         conn = self.get_db_connection()
         cursor = conn.cursor()
         
         # Check permissions
         cursor.execute('''
-            SELECT creator_id, status, entry_fee FROM bestball_events WHERE event_id = ?
+            SELECT creator_id, status, entry_fee, event_name FROM bestball_events WHERE event_id = ?
         ''', (event_id,))
         result = cursor.fetchone()
         
         if not result:
-            await interaction.followup.send(f"❌ Event `{event_id}` not found.")
+            await interaction.followup.send(f"❌ Event not found.")
             conn.close()
             return
         
-        creator_id, status, entry_fee = result
+        creator_id, status, entry_fee, event_name = result
         
         if interaction.user.id != creator_id and not interaction.user.guild_permissions.administrator:
             await interaction.followup.send("❌ Only the event creator or admins can end events.")
@@ -1035,7 +1507,7 @@ class BestBallCog(commands.Cog):
         conn.close()
         
         embed = discord.Embed(
-            title=f"🏆 Best Ball Event Complete: {event_id}",
+            title=f"🏆 {event_name} Complete!",
             description="Final standings and payment obligations generated!",
             color=discord.Color.gold()
         )
@@ -1089,6 +1561,69 @@ class BestBallCog(commands.Cog):
         if best_ball_channel:
             await best_ball_channel.send(embed=embed)
     
+    @app_commands.command(name="cancelbestball", description="[Admin] Cancel a Best Ball event")
+    @app_commands.describe(event="Select the event to cancel")
+    @app_commands.autocomplete(event=event_autocomplete)
+    async def cancel_best_ball(self, interaction: discord.Interaction, event: str):
+        """Cancel an event and remove all associated data."""
+        event_id = event
+        
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Check if user is creator or admin
+        cursor.execute('''
+            SELECT creator_id, status, event_name FROM bestball_events WHERE event_id = ?
+        ''', (event_id,))
+        result = cursor.fetchone()
+        
+        if not result:
+            await interaction.response.send_message(
+                f"❌ Event not found.",
+                ephemeral=True
+            )
+            conn.close()
+            return
+        
+        creator_id, status, event_name = result
+        
+        if interaction.user.id != creator_id and not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                "❌ Only the event creator or admins can cancel events.",
+                ephemeral=True
+            )
+            conn.close()
+            return
+        
+        if status == 'completed':
+            await interaction.response.send_message(
+                "❌ Cannot cancel a completed event. Payments have already been generated.",
+                ephemeral=True
+            )
+            conn.close()
+            return
+        
+        # Delete all associated data
+        cursor.execute('DELETE FROM bestball_weekly_scores WHERE event_id = ?', (event_id,))
+        cursor.execute('DELETE FROM bestball_rosters WHERE event_id = ?', (event_id,))
+        cursor.execute('DELETE FROM bestball_participants WHERE event_id = ?', (event_id,))
+        cursor.execute('DELETE FROM bestball_payments WHERE event_id = ?', (event_id,))
+        cursor.execute('DELETE FROM bestball_events WHERE event_id = ?', (event_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        await interaction.response.send_message(
+            f"✅ **{event_name}** has been cancelled and all data removed."
+        )
+        
+        # Notify in best-ball channel
+        best_ball_channel = discord.utils.get(interaction.guild.channels, name='best-ball')
+        if best_ball_channel:
+            await best_ball_channel.send(
+                f"⚠️ Best Ball event **{event_name}** has been cancelled by {interaction.user.mention}."
+            )
+    
     @app_commands.command(name="bestballhelp", description="Show Best Ball rules and commands")
     async def best_ball_help(self, interaction: discord.Interaction):
         """Display help information for Best Ball."""
@@ -1140,7 +1675,7 @@ class BestBallCog(commands.Cog):
             value=(
                 "**Passing:** 0.04/yd, 4/TD, -2/INT\n"
                 "**Rush/Rec:** 0.1/yd, 6/TD, 1/rec\n"
-                "**Bonus:** +5 for 100+ yd game, +3 for 40+ yd TD"
+                "**Bonus:** +3 for 100+ rush/rec yd, 300+ pass yd"
             ),
             inline=False
         )
@@ -1161,175 +1696,32 @@ class BestBallCog(commands.Cog):
             value=(
                 "`/startbestball` - Create new event\n"
                 "`/joinbestball` - Join an event\n"
-                "`/selectyourteam` - Build your roster\n"
-                "`/addplayer` - Add player to roster\n"
+                "`/selectyourteam` - Check roster progress\n"
+                "`/addplayer` - Add player (autocomplete search!)\n"
+                "`/removeplayer` - Remove a player\n"
                 "`/reviewbestballroster` - View roster\n"
                 "`/bestballstatus` - Check standings\n"
                 "`/closebestball` - Lock rosters (admin)\n"
-                "`/endbestball` - End event & generate payments"
+                "`/endbestball` - End event & generate payments\n"
+                "`/cancelbestball` - Cancel an event (admin)"
             ),
             inline=False
         )
         
         await interaction.response.send_message(embed=embed)
-
-
-class RosterBuildView(discord.ui.View):
-    """View for interactive roster building."""
     
-    def __init__(self, cog: BestBallCog, user_id: int, event_id: str, current_count: int):
-        super().__init__(timeout=300)
-        self.cog = cog
-        self.user_id = user_id
-        self.event_id = event_id
-        self.current_count = current_count
-    
-    @discord.ui.button(label="QB", style=discord.ButtonStyle.primary)
-    async def add_qb(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._prompt_player_search(interaction, "QB")
-    
-    @discord.ui.button(label="RB", style=discord.ButtonStyle.primary)
-    async def add_rb(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._prompt_player_search(interaction, "RB")
-    
-    @discord.ui.button(label="WR", style=discord.ButtonStyle.primary)
-    async def add_wr(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._prompt_player_search(interaction, "WR")
-    
-    @discord.ui.button(label="TE", style=discord.ButtonStyle.primary)
-    async def add_te(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._prompt_player_search(interaction, "TE")
-    
-    @discord.ui.button(label="DST", style=discord.ButtonStyle.secondary)
-    async def add_dst(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._prompt_player_search(interaction, "DST")
-    
-    async def _prompt_player_search(self, interaction: discord.Interaction, position: str):
-        """Prompt user to search for a player."""
-        modal = PlayerSearchModal(self.cog, self.event_id, self.user_id, position)
-        await interaction.response.send_modal(modal)
-
-
-class PlayerSearchModal(discord.ui.Modal):
-    """Modal for searching and adding players."""
-    
-    def __init__(self, cog: BestBallCog, event_id: str, user_id: int, position: str):
-        super().__init__(title=f"Add {position} to Roster")
-        self.cog = cog
-        self.event_id = event_id
-        self.user_id = user_id
-        self.position = position
-        
-        self.player_name = discord.ui.TextInput(
-            label=f"Enter {position} name",
-            placeholder="e.g., Mahomes, McCaffrey, Jefferson",
-            required=True,
-            max_length=50
-        )
-        self.add_item(self.player_name)
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        """Handle player search submission."""
+    @app_commands.command(name="refreshplayers", description="[Admin] Refresh the player database from Snallabot")
+    @app_commands.default_permissions(administrator=True)
+    async def refresh_players(self, interaction: discord.Interaction):
+        """Manually refresh the player cache."""
         await interaction.response.defer(ephemeral=True)
         
-        # Search for player
-        players = await self.cog._get_player_pool()
-        matches = self.cog._search_players(
-            self.player_name.value, players, self.position
+        await self.refresh_player_cache()
+        
+        await interaction.followup.send(
+            f"✅ Player cache refreshed! {len(self.player_cache)} players loaded.",
+            ephemeral=True
         )
-        
-        if not matches:
-            await interaction.followup.send(
-                f"❌ No {self.position}s found matching '{self.player_name.value}'.",
-                ephemeral=True
-            )
-            return
-        
-        if len(matches) == 1:
-            # Auto-add single match
-            player = matches[0]
-            success = await self.cog._add_player_to_roster(
-                self.event_id, self.user_id, player
-            )
-            
-            if success:
-                await interaction.followup.send(
-                    f"✅ Added **{player['name']}** ({player['position']} - {player['team']}) to your roster!",
-                    ephemeral=True
-                )
-            else:
-                await interaction.followup.send(
-                    f"❌ Failed to add player. They may already be on your roster.",
-                    ephemeral=True
-                )
-        else:
-            # Show selection
-            view = PlayerSelectView(self.cog, self.event_id, self.user_id, matches)
-            
-            embed = discord.Embed(
-                title=f"🔍 Select {self.position}",
-                description=f"Multiple matches for '{self.player_name.value}':",
-                color=discord.Color.blue()
-            )
-            
-            for i, p in enumerate(matches, 1):
-                embed.add_field(
-                    name=f"{i}. {p['name']}",
-                    value=f"{p['position']} - {p['team']} ({p['overall']} OVR)",
-                    inline=True
-                )
-            
-            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-
-
-class PlayerSelectView(discord.ui.View):
-    """View for selecting from multiple player matches."""
-    
-    def __init__(self, cog: BestBallCog, event_id: str, user_id: int, players: List[Dict]):
-        super().__init__(timeout=60)
-        self.cog = cog
-        self.event_id = event_id
-        self.user_id = user_id
-        self.players = players
-        
-        # Add select menu
-        options = [
-            discord.SelectOption(
-                label=f"{p['name']} ({p['team']})",
-                description=f"{p['position']} - {p['overall']} OVR",
-                value=str(i)
-            )
-            for i, p in enumerate(players)
-        ]
-        
-        select = discord.ui.Select(
-            placeholder="Select a player...",
-            options=options
-        )
-        select.callback = self.select_callback
-        self.add_item(select)
-    
-    async def select_callback(self, interaction: discord.Interaction):
-        """Handle player selection."""
-        index = int(interaction.data['values'][0])
-        player = self.players[index]
-        
-        success = await self.cog._add_player_to_roster(
-            self.event_id, self.user_id, player
-        )
-        
-        if success:
-            await interaction.response.send_message(
-                f"✅ Added **{player['name']}** ({player['position']} - {player['team']}) to your roster!",
-                ephemeral=True
-            )
-        else:
-            await interaction.response.send_message(
-                f"❌ Failed to add player. They may already be on your roster.",
-                ephemeral=True
-            )
-        
-        self.stop()
 
 
 async def setup(bot):
