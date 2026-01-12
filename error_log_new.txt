@@ -1,0 +1,8 @@
+Error from Railway logs (Jan 12, 2026 01:49):
+
+sqlite3.OperationalError: no such column: r.last_dm_sent
+
+The wager_reminders table doesn't exist in the production database.
+The table is created in _ensure_reminder_table() but the LEFT JOIN is failing because the table doesn't have the expected columns.
+
+Need to check if the table exists and has the correct schema.

@@ -70,19 +70,38 @@ class PaymentRemindersCog(commands.Cog):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        cursor.execute('''
-            SELECT w.wager_id, w.season_year, w.week, w.home_team_id, w.away_team_id,
-                   w.home_user_id, w.away_user_id, w.amount, w.winner_user_id,
-                   w.winner_team_id, w.created_at,
-                   r.last_dm_sent, r.last_channel_sent, r.dm_count, r.channel_count
-            FROM wagers w
-            LEFT JOIN wager_reminders r ON w.wager_id = r.wager_id
-            WHERE w.winner_user_id IS NOT NULL 
-              AND (w.is_paid = 0 OR w.is_paid IS NULL)
-            ORDER BY w.created_at ASC
-        ''')
+        # Ensure the reminder table exists
+        self._ensure_reminder_table()
         
-        wagers = cursor.fetchall()
+        try:
+            cursor.execute('''
+                SELECT w.wager_id, w.season_year, w.week, w.home_team_id, w.away_team_id,
+                       w.home_user_id, w.away_user_id, w.amount, w.winner_user_id,
+                       w.winner_team_id, w.created_at,
+                       r.last_dm_sent, r.last_channel_sent, r.dm_count, r.channel_count
+                FROM wagers w
+                LEFT JOIN wager_reminders r ON w.wager_id = r.wager_id
+                WHERE w.winner_user_id IS NOT NULL 
+                  AND (w.is_paid = 0 OR w.is_paid IS NULL)
+                ORDER BY w.created_at ASC
+            ''')
+            
+            wagers = cursor.fetchall()
+        except Exception as e:
+            logger.error(f"Error fetching unpaid wagers: {e}")
+            # Fallback: query without the reminders table
+            cursor.execute('''
+                SELECT w.wager_id, w.season_year, w.week, w.home_team_id, w.away_team_id,
+                       w.home_user_id, w.away_user_id, w.amount, w.winner_user_id,
+                       w.winner_team_id, w.created_at,
+                       NULL, NULL, 0, 0
+                FROM wagers w
+                WHERE w.winner_user_id IS NOT NULL 
+                  AND (w.is_paid = 0 OR w.is_paid IS NULL)
+                ORDER BY w.created_at ASC
+            ''')
+            wagers = cursor.fetchall()
+        
         conn.close()
         return wagers
     
