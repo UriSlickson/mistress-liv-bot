@@ -118,6 +118,7 @@ class MistressLIVBot(commands.Bot):
         await self.load_extension('cogs.madden_export')
         await self.load_extension('cogs.snallabot_integration')
         await self.load_extension('cogs.league_info')
+        await self.load_extension('cogs.best_ball')
         
         # Sync slash commands
         guild = discord.Object(id=self.guild_id)
