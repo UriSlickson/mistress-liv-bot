@@ -1,10 +1,10 @@
 """
 Announcements Cog - Admin announcement and channel management
-CONSOLIDATED COMMANDS:
-/announce post - Post to channels and optionally DM owners
-/announce dm - DM all team owners
-/announce clear - Clear a channel
-/announce commands - Post command list
+COMMANDS:
+/announce all - Post to #townsquare, #announcements, AND DM all members
+/announce post - Post to #townsquare and #announcements only
+/announce dm - DM all league members only
+/announce clear - Clear a selected channel
 """
 
 import discord
@@ -48,27 +48,16 @@ class AnnouncementsCog(commands.Cog):
     
     announce_group = app_commands.Group(name="announce", description="Announcement commands (Admin)")
     
-    @announce_group.command(name="post", description="Post announcement to channels and optionally DM owners")
-    @app_commands.describe(
-        message="The announcement message",
-        dm_owners="Also DM all team owners (default: False)",
-        channel="Specific channel to post to (default: #townsquare)"
-    )
+    @announce_group.command(name="all", description="Post to #townsquare, #announcements, AND DM all league members")
+    @app_commands.describe(message="The announcement message")
     @app_commands.checks.has_permissions(administrator=True)
-    async def announce_post(
-        self,
-        interaction: discord.Interaction,
-        message: str,
-        dm_owners: bool = False,
-        channel: Optional[discord.TextChannel] = None
-    ):
-        """Post announcement to channels and optionally DM owners."""
+    async def announce_all(self, interaction: discord.Interaction, message: str):
+        """Post announcement to channels AND DM all league members."""
         await interaction.response.defer()
         
         # Find channels
         townsquare = discord.utils.get(interaction.guild.text_channels, name='townsquare')
         announcements = discord.utils.get(interaction.guild.text_channels, name='announcements')
-        target_channel = channel or townsquare
         
         embed = discord.Embed(
             title="📢 Announcement",
@@ -79,39 +68,73 @@ class AnnouncementsCog(commands.Cog):
         
         posted_to = []
         
-        # Post to target channel
-        if target_channel:
-            await target_channel.send(embed=embed)
-            posted_to.append(target_channel.mention)
+        # Post to townsquare
+        if townsquare:
+            await townsquare.send(embed=embed)
+            posted_to.append(townsquare.mention)
         
-        # Also post to announcements if different
-        if announcements and announcements != target_channel:
+        # Post to announcements
+        if announcements:
             await announcements.send(embed=embed)
             posted_to.append(announcements.mention)
         
+        # DM all league members
+        owners = self._get_team_owners(interaction.guild)
         dm_count = 0
         dm_failed = 0
         
-        if dm_owners:
-            owners = self._get_team_owners(interaction.guild)
-            for owner in owners:
-                try:
-                    await owner.send(embed=embed)
-                    dm_count += 1
-                except:
-                    dm_failed += 1
+        for owner in owners:
+            try:
+                await owner.send(embed=embed)
+                dm_count += 1
+            except:
+                dm_failed += 1
         
-        result = f"✅ Posted to: {', '.join(posted_to)}"
-        if dm_owners:
-            result += f"\n📬 DMed {dm_count} owners ({dm_failed} failed)"
+        result = f"✅ Posted to: {', '.join(posted_to) if posted_to else 'No channels found'}"
+        result += f"\n📬 DMed {dm_count} league members ({dm_failed} failed)"
         
         await interaction.followup.send(result, ephemeral=True)
     
-    @announce_group.command(name="dm", description="Send a DM to all team owners")
+    @announce_group.command(name="post", description="Post to #townsquare and #announcements only")
+    @app_commands.describe(message="The announcement message")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def announce_post(self, interaction: discord.Interaction, message: str):
+        """Post announcement to #townsquare and #announcements only."""
+        await interaction.response.defer()
+        
+        # Find channels
+        townsquare = discord.utils.get(interaction.guild.text_channels, name='townsquare')
+        announcements = discord.utils.get(interaction.guild.text_channels, name='announcements')
+        
+        embed = discord.Embed(
+            title="📢 Announcement",
+            description=message,
+            color=discord.Color.blue()
+        )
+        embed.set_footer(text=f"Posted by {interaction.user.display_name}")
+        
+        posted_to = []
+        
+        # Post to townsquare
+        if townsquare:
+            await townsquare.send(embed=embed)
+            posted_to.append(townsquare.mention)
+        
+        # Post to announcements
+        if announcements:
+            await announcements.send(embed=embed)
+            posted_to.append(announcements.mention)
+        
+        if posted_to:
+            await interaction.followup.send(f"✅ Posted to: {', '.join(posted_to)}", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ Could not find #townsquare or #announcements channels", ephemeral=True)
+    
+    @announce_group.command(name="dm", description="DM all league members only")
     @app_commands.describe(message="The message to send")
     @app_commands.checks.has_permissions(administrator=True)
     async def announce_dm(self, interaction: discord.Interaction, message: str):
-        """DM all team owners."""
+        """DM all league members."""
         await interaction.response.defer()
         
         owners = self._get_team_owners(interaction.guild)
@@ -134,11 +157,11 @@ class AnnouncementsCog(commands.Cog):
                 failed += 1
         
         await interaction.followup.send(
-            f"✅ DMed {success} team owners ({failed} failed)",
+            f"✅ DMed {success} league members ({failed} failed)",
             ephemeral=True
         )
     
-    @announce_group.command(name="clear", description="Delete all messages in a channel")
+    @announce_group.command(name="clear", description="Delete all messages in a selected channel")
     @app_commands.describe(
         channel="Channel to clear",
         confirm="Type CONFIRM to proceed"
@@ -150,7 +173,7 @@ class AnnouncementsCog(commands.Cog):
         channel: discord.TextChannel,
         confirm: str
     ):
-        """Clear all messages in a channel."""
+        """Clear all messages in a selected channel."""
         if confirm != "CONFIRM":
             await interaction.response.send_message(
                 "❌ You must type CONFIRM to clear the channel.",
@@ -172,103 +195,6 @@ class AnnouncementsCog(commands.Cog):
             f"✅ Deleted {deleted} messages from {channel.mention}",
             ephemeral=True
         )
-    
-    @announce_group.command(name="commands", description="Post the command list to a channel")
-    @app_commands.describe(channel="Channel to post to (default: #commands)")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def announce_commands(
-        self,
-        interaction: discord.Interaction,
-        channel: Optional[discord.TextChannel] = None
-    ):
-        """Post the full command list to a channel."""
-        await interaction.response.defer()
-        
-        target = channel or discord.utils.get(interaction.guild.text_channels, name='commands')
-        
-        if not target:
-            await interaction.followup.send("❌ No #commands channel found.", ephemeral=True)
-            return
-        
-        # Command list embed
-        embed = discord.Embed(
-            title="📋 Mistress LIV Bot Commands",
-            description="All available commands organized by category",
-            color=discord.Color.blue()
-        )
-        
-        embed.add_field(
-            name="💰 Wagers",
-            value=(
-                "`/wager` - Create a wager\n"
-                "`/acceptwager` - Accept a wager\n"
-                "`/declinewager` - Decline a wager\n"
-                "`/cancelwager` - Cancel your wager\n"
-                "`/wagerwin` - Settle a wager\n"
-                "`/paid` - Confirm payment received\n"
-                "`/mywagers` - View your wagers"
-            ),
-            inline=False
-        )
-        
-        embed.add_field(
-            name="💵 Payments",
-            value=(
-                "`/payments owedtome` - Who owes you\n"
-                "`/payments iowe` - Who you owe\n"
-                "`/payments status` - Your payment status\n"
-                "`/payments paid` - Mark payment received"
-            ),
-            inline=False
-        )
-        
-        embed.add_field(
-            name="🏈 Best Ball",
-            value=(
-                "`/bestball start` - Create event\n"
-                "`/bestball join` - Join event\n"
-                "`/bestball roster` - View your roster\n"
-                "`/bestball add` - Add player\n"
-                "`/bestball remove` - Remove player\n"
-                "`/bestball status` - View standings\n"
-                "`/bestball rules` - View rules"
-            ),
-            inline=False
-        )
-        
-        embed.add_field(
-            name="📊 Leaderboards",
-            value=(
-                "`/leaderboard earners` - Top earners\n"
-                "`/leaderboard losers` - Biggest losers\n"
-                "`/wagerboard` - Wager leaderboard"
-            ),
-            inline=False
-        )
-        
-        embed.add_field(
-            name="📜 League Info",
-            value=(
-                "`/rules` - League rules\n"
-                "`/dynamics` - League dynamics\n"
-                "`/requirements` - Member requirements\n"
-                "`/payouts` - Payout structure"
-            ),
-            inline=False
-        )
-        
-        embed.add_field(
-            name="⚙️ League Config",
-            value=(
-                "`/league setup` - Set up league\n"
-                "`/league info` - View league info\n"
-                "`/league switch` - Switch leagues"
-            ),
-            inline=False
-        )
-        
-        await target.send(embed=embed)
-        await interaction.followup.send(f"✅ Posted commands to {target.mention}", ephemeral=True)
 
 
 async def setup(bot):
