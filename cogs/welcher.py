@@ -1,7 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-import aiosqlite
+import sqlite3
 from datetime import datetime
 from typing import Optional
 
@@ -10,61 +10,64 @@ class WelcherCog(commands.Cog):
     
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = "mistress_liv.db"
+        self.db_path = "data/mistress_liv.db"
+        self._ensure_welcher_table()
     
-    async def cog_load(self):
-        """Initialize the welcher table when cog loads"""
-        await self._ensure_welcher_table()
-    
-    async def _ensure_welcher_table(self):
+    def _ensure_welcher_table(self):
         """Create the welcher table if it doesn't exist"""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute('''
-                CREATE TABLE IF NOT EXISTS welchers (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    guild_id TEXT NOT NULL,
-                    user_id TEXT NOT NULL,
-                    banned_by TEXT NOT NULL,
-                    reason TEXT,
-                    amount_owed REAL DEFAULT 0,
-                    banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    is_active INTEGER DEFAULT 1,
-                    reactivated_at TIMESTAMP,
-                    reactivated_by TEXT,
-                    UNIQUE(guild_id, user_id)
-                )
-            ''')
-            await db.commit()
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS welchers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                banned_by TEXT NOT NULL,
+                reason TEXT,
+                amount_owed REAL DEFAULT 0,
+                banned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_active INTEGER DEFAULT 1,
+                reactivated_at TIMESTAMP,
+                reactivated_by TEXT,
+                UNIQUE(guild_id, user_id)
+            )
+        ''')
+        conn.commit()
+        conn.close()
     
-    async def is_welcher(self, guild_id: str, user_id: str) -> bool:
+    def is_welcher(self, guild_id: str, user_id: str) -> bool:
         """Check if a user is currently banned as a welcher"""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute('''
-                SELECT is_active FROM welchers 
-                WHERE guild_id = ? AND user_id = ? AND is_active = 1
-            ''', (guild_id, user_id))
-            result = await cursor.fetchone()
-            return result is not None
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT is_active FROM welchers 
+            WHERE guild_id = ? AND user_id = ? AND is_active = 1
+        ''', (guild_id, user_id))
+        result = cursor.fetchone()
+        conn.close()
+        return result is not None
     
-    async def get_welcher_info(self, guild_id: str, user_id: str) -> Optional[dict]:
+    def get_welcher_info(self, guild_id: str, user_id: str) -> Optional[dict]:
         """Get welcher information for a user"""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute('''
-                SELECT user_id, banned_by, reason, amount_owed, banned_at, is_active
-                FROM welchers 
-                WHERE guild_id = ? AND user_id = ?
-            ''', (guild_id, user_id))
-            result = await cursor.fetchone()
-            if result:
-                return {
-                    'user_id': result[0],
-                    'banned_by': result[1],
-                    'reason': result[2],
-                    'amount_owed': result[3],
-                    'banned_at': result[4],
-                    'is_active': result[5]
-                }
-            return None
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT user_id, banned_by, reason, amount_owed, banned_at, is_active
+            FROM welchers 
+            WHERE guild_id = ? AND user_id = ?
+        ''', (guild_id, user_id))
+        result = cursor.fetchone()
+        conn.close()
+        if result:
+            return {
+                'user_id': result[0],
+                'banned_by': result[1],
+                'reason': result[2],
+                'amount_owed': result[3],
+                'banned_at': result[4],
+                'is_active': result[5]
+            }
+        return None
     
     @app_commands.command(name="welcher", description="Ban a user from wagering, payouts, and Best Ball for not paying")
     @app_commands.describe(
@@ -86,7 +89,7 @@ class WelcherCog(commands.Cog):
         banned_by = str(interaction.user.id)
         
         # Check if already banned
-        existing = await self.get_welcher_info(guild_id, user_id)
+        existing = self.get_welcher_info(guild_id, user_id)
         if existing and existing['is_active']:
             await interaction.response.send_message(
                 f"⚠️ {user.mention} is already banned as a welcher.",
@@ -94,22 +97,24 @@ class WelcherCog(commands.Cog):
             )
             return
         
-        async with aiosqlite.connect(self.db_path) as db:
-            if existing:
-                # Reactivate existing ban
-                await db.execute('''
-                    UPDATE welchers 
-                    SET is_active = 1, banned_by = ?, reason = ?, amount_owed = ?, 
-                        banned_at = CURRENT_TIMESTAMP, reactivated_at = NULL, reactivated_by = NULL
-                    WHERE guild_id = ? AND user_id = ?
-                ''', (banned_by, reason, amount_owed, guild_id, user_id))
-            else:
-                # Create new ban
-                await db.execute('''
-                    INSERT INTO welchers (guild_id, user_id, banned_by, reason, amount_owed)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (guild_id, user_id, banned_by, reason, amount_owed))
-            await db.commit()
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        if existing:
+            # Reactivate existing ban
+            cursor.execute('''
+                UPDATE welchers 
+                SET is_active = 1, banned_by = ?, reason = ?, amount_owed = ?, 
+                    banned_at = CURRENT_TIMESTAMP, reactivated_at = NULL, reactivated_by = NULL
+                WHERE guild_id = ? AND user_id = ?
+            ''', (banned_by, reason, amount_owed, guild_id, user_id))
+        else:
+            # Create new ban
+            cursor.execute('''
+                INSERT INTO welchers (guild_id, user_id, banned_by, reason, amount_owed)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (guild_id, user_id, banned_by, reason, amount_owed))
+        conn.commit()
+        conn.close()
         
         # Create embed
         embed = discord.Embed(
@@ -120,7 +125,7 @@ class WelcherCog(commands.Cog):
         embed.add_field(name="Banned User", value=user.mention, inline=True)
         embed.add_field(name="Banned By", value=interaction.user.mention, inline=True)
         embed.add_field(name="Reason", value=reason, inline=False)
-        if amount_owed > 0:
+        if amount_owed and amount_owed > 0:
             embed.add_field(name="Amount Owed", value=f"${amount_owed:.2f}", inline=True)
         embed.add_field(
             name="Restrictions", 
@@ -138,7 +143,7 @@ class WelcherCog(commands.Cog):
         reason="Reason for reactivation (e.g., 'Paid their debt')"
     )
     @app_commands.default_permissions(administrator=True)
-    async def unwelcher(
+    async def redeemed(
         self, 
         interaction: discord.Interaction, 
         user: discord.Member,
@@ -150,7 +155,7 @@ class WelcherCog(commands.Cog):
         reactivated_by = str(interaction.user.id)
         
         # Check if user is actually banned
-        existing = await self.get_welcher_info(guild_id, user_id)
+        existing = self.get_welcher_info(guild_id, user_id)
         if not existing or not existing['is_active']:
             await interaction.response.send_message(
                 f"⚠️ {user.mention} is not currently banned as a welcher.",
@@ -158,13 +163,15 @@ class WelcherCog(commands.Cog):
             )
             return
         
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute('''
-                UPDATE welchers 
-                SET is_active = 0, reactivated_at = CURRENT_TIMESTAMP, reactivated_by = ?
-                WHERE guild_id = ? AND user_id = ?
-            ''', (reactivated_by, guild_id, user_id))
-            await db.commit()
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE welchers 
+            SET is_active = 0, reactivated_at = CURRENT_TIMESTAMP, reactivated_by = ?
+            WHERE guild_id = ? AND user_id = ?
+        ''', (reactivated_by, guild_id, user_id))
+        conn.commit()
+        conn.close()
         
         # Create embed
         embed = discord.Embed(
@@ -189,14 +196,16 @@ class WelcherCog(commands.Cog):
         """List all current welchers"""
         guild_id = str(interaction.guild_id)
         
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute('''
-                SELECT user_id, reason, amount_owed, banned_at
-                FROM welchers 
-                WHERE guild_id = ? AND is_active = 1
-                ORDER BY banned_at DESC
-            ''', (guild_id,))
-            welchers = await cursor.fetchall()
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT user_id, reason, amount_owed, banned_at
+            FROM welchers 
+            WHERE guild_id = ? AND is_active = 1
+            ORDER BY banned_at DESC
+        ''', (guild_id,))
+        welchers = cursor.fetchall()
+        conn.close()
         
         if not welchers:
             embed = discord.Embed(
@@ -218,7 +227,7 @@ class WelcherCog(commands.Cog):
             user_display = user.mention if user else f"<@{user_id}>"
             
             value = f"**Reason:** {reason}"
-            if amount_owed > 0:
+            if amount_owed and amount_owed > 0:
                 value += f"\n**Owed:** ${amount_owed:.2f}"
             value += f"\n**Since:** {banned_at[:10] if banned_at else 'Unknown'}"
             
@@ -234,7 +243,7 @@ class WelcherCog(commands.Cog):
         guild_id = str(interaction.guild_id)
         user_id = str(user.id)
         
-        info = await self.get_welcher_info(guild_id, user_id)
+        info = self.get_welcher_info(guild_id, user_id)
         
         if not info or not info['is_active']:
             embed = discord.Embed(
@@ -255,7 +264,7 @@ class WelcherCog(commands.Cog):
                 color=discord.Color.red()
             )
             embed.add_field(name="Reason", value=info['reason'], inline=False)
-            if info['amount_owed'] > 0:
+            if info['amount_owed'] and info['amount_owed'] > 0:
                 embed.add_field(name="Amount Owed", value=f"${info['amount_owed']:.2f}", inline=True)
             embed.add_field(name="Banned Since", value=info['banned_at'][:10] if info['banned_at'] else 'Unknown', inline=True)
             
