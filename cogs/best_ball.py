@@ -1728,6 +1728,208 @@ class BestBallCog(commands.Cog):
         
         await interaction.response.send_message(embed=embed)
     
+    @app_commands.command(name="bestballrules", description="View detailed Best Ball rules and dynamics")
+    async def bestball_rules(self, interaction: discord.Interaction):
+        """Display comprehensive Best Ball rules and dynamics."""
+        
+        # Create multiple embeds for detailed rules
+        embeds = []
+        
+        # Embed 1: Overview
+        overview = discord.Embed(
+            title="🏈 Best Ball Rules & Dynamics",
+            description=(
+                "Best Ball is a **set-it-and-forget-it** fantasy football format. "
+                "You draft a roster of Madden players, and each week the bot automatically "
+                "selects your highest-scoring lineup. No weekly management needed!"
+            ),
+            color=discord.Color.gold()
+        )
+        overview.add_field(
+            name="📋 How It Works",
+            value=(
+                "1. **Join an Event** - Pay the entry fee to participate\n"
+                "2. **Draft Your Roster** - Select 20 players from the Madden player pool\n"
+                "3. **Auto-Optimize** - Each week, the bot picks your best lineup\n"
+                "4. **Accumulate Points** - Your weekly scores add up over the event duration\n"
+                "5. **Get Paid** - At the end, losers pay winners based on final standings"
+            ),
+            inline=False
+        )
+        embeds.append(overview)
+        
+        # Embed 2: Roster Requirements
+        roster = discord.Embed(
+            title="👥 Roster Requirements",
+            description="Build a 20-player roster with the following position limits:",
+            color=discord.Color.blue()
+        )
+        roster.add_field(
+            name="📊 Position Limits",
+            value=(
+                "**QB:** 1-3 players\n"
+                "**RB:** 2-6 players\n"
+                "**WR:** 3-7 players\n"
+                "**TE:** 1-3 players\n"
+                "**K:** 1-2 players\n"
+                "**DST:** 1-2 players"
+            ),
+            inline=True
+        )
+        roster.add_field(
+            name="🎯 Weekly Starting Lineup",
+            value=(
+                "**1 QB** - Quarterback\n"
+                "**2 RB** - Running Backs\n"
+                "**3 WR** - Wide Receivers\n"
+                "**1 TE** - Tight End\n"
+                "**2 FLEX** - RB/WR/TE\n"
+                "**1 DST** - Defense/ST"
+            ),
+            inline=True
+        )
+        roster.add_field(
+            name="💡 Strategy Tip",
+            value=(
+                "Since the bot auto-selects your best players each week, "
+                "draft for **upside and volume**. Target players with high ceilings "
+                "who get consistent opportunities in the Madden sim."
+            ),
+            inline=False
+        )
+        embeds.append(roster)
+        
+        # Embed 3: Scoring
+        scoring = discord.Embed(
+            title="📊 Scoring System (PPR)",
+            description="Points Per Reception format with standard fantasy scoring:",
+            color=discord.Color.green()
+        )
+        scoring.add_field(
+            name="🏈 Passing",
+            value=(
+                "• **0.04 pts** per passing yard\n"
+                "• **4 pts** per passing TD\n"
+                "• **-2 pts** per interception"
+            ),
+            inline=True
+        )
+        scoring.add_field(
+            name="🏃 Rushing",
+            value=(
+                "• **0.1 pts** per rushing yard\n"
+                "• **6 pts** per rushing TD\n"
+                "• **+3 pts** bonus for 100+ yards"
+            ),
+            inline=True
+        )
+        scoring.add_field(
+            name="🙌 Receiving",
+            value=(
+                "• **1 pt** per reception (PPR)\n"
+                "• **0.1 pts** per receiving yard\n"
+                "• **6 pts** per receiving TD\n"
+                "• **+3 pts** bonus for 100+ yards"
+            ),
+            inline=True
+        )
+        scoring.add_field(
+            name="⚡ Bonuses",
+            value=(
+                "• **+3 pts** for 300+ passing yards\n"
+                "• **+3 pts** for 100+ rushing yards\n"
+                "• **+3 pts** for 100+ receiving yards"
+            ),
+            inline=False
+        )
+        embeds.append(scoring)
+        
+        # Embed 4: Payout Structure
+        payouts = discord.Embed(
+            title="💰 Payout Structure",
+            description=(
+                "Best Ball uses a **Loser-Pays-Winner** system, similar to our playoff payouts. "
+                "The bottom half of finishers pay the top half."
+            ),
+            color=discord.Color.red()
+        )
+        payouts.add_field(
+            name="🏆 How Payouts Work",
+            value=(
+                "• **Last place** pays **1st place**\n"
+                "• **2nd to last** pays **2nd place**\n"
+                "• **3rd to last** pays **3rd place**\n"
+                "• And so on until the middle is reached..."
+            ),
+            inline=False
+        )
+        payouts.add_field(
+            name="📊 Example (12 Players, $50 Entry)",
+            value=(
+                "```\n"
+                "Rank 12 (Last)  → Pays Rank 1  = $50\n"
+                "Rank 11         → Pays Rank 2  = $50\n"
+                "Rank 10         → Pays Rank 3  = $50\n"
+                "Rank 9          → Pays Rank 4  = $50\n"
+                "Rank 8          → Pays Rank 5  = $50\n"
+                "Rank 7          → Pays Rank 6  = $50\n"
+                "```"
+            ),
+            inline=False
+        )
+        payouts.add_field(
+            name="🤝 Tiebreakers",
+            value=(
+                "1. **Total Points** - Higher total wins\n"
+                "2. **Bench Points** - More unused points wins\n"
+                "3. **Total TDs** - More touchdowns wins"
+            ),
+            inline=False
+        )
+        embeds.append(payouts)
+        
+        # Embed 5: Timeline & Commands
+        timeline = discord.Embed(
+            title="⏰ Event Timeline",
+            description="How a Best Ball event progresses:",
+            color=discord.Color.purple()
+        )
+        timeline.add_field(
+            name="📅 Event Phases",
+            value=(
+                "**1. Registration** - Event created, players join and pay entry\n"
+                "**2. Drafting** - Build your 20-player roster\n"
+                "**3. Active** - Rosters locked, weekly scoring begins\n"
+                "**4. Completed** - Event ends, payments generated"
+            ),
+            inline=False
+        )
+        timeline.add_field(
+            name="🔧 Key Commands",
+            value=(
+                "`/joinbestball` - Join an event\n"
+                "`/addplayer` - Add player to roster\n"
+                "`/selectyourteam` - View roster progress\n"
+                "`/bestballstatus` - Check standings\n"
+                "`/bestballhelp` - Quick reference"
+            ),
+            inline=True
+        )
+        timeline.add_field(
+            name="⚙️ Admin Commands",
+            value=(
+                "`/startbestball` - Create event\n"
+                "`/closebestball` - Lock rosters\n"
+                "`/endbestball` - End & pay out\n"
+                "`/cancelbestball` - Cancel event"
+            ),
+            inline=True
+        )
+        embeds.append(timeline)
+        
+        # Send all embeds
+        await interaction.response.send_message(embeds=embeds)
+
     @app_commands.command(name="refreshplayers", description="[Admin] Refresh the player database from Snallabot")
     @app_commands.default_permissions(administrator=True)
     async def refresh_players(self, interaction: discord.Interaction):
