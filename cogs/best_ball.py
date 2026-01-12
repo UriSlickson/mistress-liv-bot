@@ -904,6 +904,15 @@ class BestBallCog(commands.Cog):
     @app_commands.autocomplete(event=event_autocomplete)
     async def join_best_ball(self, interaction: discord.Interaction, event: str):
         """Join an existing Best Ball event."""
+        # Check if user is a welcher
+        welcher_cog = self.bot.get_cog('WelcherCog')
+        if welcher_cog and await welcher_cog.is_welcher(str(interaction.guild_id), str(interaction.user.id)):
+            await interaction.response.send_message(
+                "🚫 You are currently banned from Best Ball events due to unpaid debts. Contact an admin to resolve.",
+                ephemeral=True
+            )
+            return
+        
         event_id = event  # The autocomplete returns the event_id as value
         
         conn = self.get_db_connection()

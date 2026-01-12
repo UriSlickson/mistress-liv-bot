@@ -222,6 +222,22 @@ class WagersCog(commands.Cog):
         """Create a wager challenge on any game."""
         await interaction.response.defer()
         
+        # Check if user is a welcher
+        welcher_cog = self.bot.get_cog('WelcherCog')
+        if welcher_cog:
+            if await welcher_cog.is_welcher(str(interaction.guild_id), str(interaction.user.id)):
+                await interaction.followup.send(
+                    "🚫 You are currently banned from wagering due to unpaid debts. Contact an admin to resolve.",
+                    ephemeral=True
+                )
+                return
+            if await welcher_cog.is_welcher(str(interaction.guild_id), str(opponent.id)):
+                await interaction.followup.send(
+                    f"🚫 {opponent.mention} is currently banned from wagering due to unpaid debts.",
+                    ephemeral=True
+                )
+                return
+        
         # Validate amount
         if amount <= 0:
             await interaction.followup.send("❌ Wager amount must be greater than $0!", ephemeral=True)
@@ -372,6 +388,15 @@ class WagersCog(commands.Cog):
     async def acceptwager(self, interaction: discord.Interaction, wager_id: int):
         """Accept a wager that was sent to you."""
         await interaction.response.defer()
+        
+        # Check if user is a welcher
+        welcher_cog = self.bot.get_cog('WelcherCog')
+        if welcher_cog and await welcher_cog.is_welcher(str(interaction.guild_id), str(interaction.user.id)):
+            await interaction.followup.send(
+                "🚫 You are currently banned from wagering due to unpaid debts. Contact an admin to resolve.",
+                ephemeral=True
+            )
+            return
         
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
