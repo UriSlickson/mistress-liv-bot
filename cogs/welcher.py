@@ -277,3 +277,4 @@ class WelcherCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(WelcherCog(bot))
+# Force rebuild Mon Jan 12 10:31:28 EST 2026
