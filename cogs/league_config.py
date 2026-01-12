@@ -401,4 +401,3 @@ class LeagueConfigCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(LeagueConfigCog(bot))
-"""
