@@ -12,9 +12,6 @@
 ### `/admin` - Administrative Commands
 | Subcommand | Description |
 |------------|-------------|
-| `/admin helmet sync @member` | Add helmet emoji to a member's nickname |
-| `/admin helmet syncall` | Add helmet emojis to all registered team owners |
-| `/admin helmet remove @member` | Remove helmet emoji from a member's nickname |
 | `/admin setup roles` | Create team roles with proper colors |
 | `/admin setup payouts` | Create the payouts channel |
 
@@ -196,9 +193,6 @@
 | `/setseason` | `/league season` |
 | `/removeleague` | `/league remove` |
 | `/setchannels` | `/league channels` |
-| `/synchelmet` | `/admin helmet sync` |
-| `/syncallhelmets` | `/admin helmet syncall` |
-| `/removehelmet` | `/admin helmet remove` |
 | `/setuproles` | `/admin setup roles` |
 | `/createpayouts` | `/admin setup payouts` |
 | `/setseeding` | `/playoff seeding` |
