@@ -81,7 +81,7 @@ class WelcherCog(commands.Cog):
         interaction: discord.Interaction, 
         user: discord.Member,
         reason: str,
-        amount_owed: Optional[float] = 0
+        amount_owed: Optional[float] = 0.0
     ):
         """Ban a user from all money-related activities"""
         guild_id = str(interaction.guild_id)
