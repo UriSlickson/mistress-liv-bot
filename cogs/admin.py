@@ -1,14 +1,18 @@
 """
 Admin Cog - Administrative commands for server management
-Features:
-- Helmet logo management
-- Role synchronization
-- Server aesthetics
-- Help commands
+CONSOLIDATED COMMANDS:
+/admin helmet sync - Sync helmet for a member
+/admin helmet syncall - Sync all helmets
+/admin helmet remove - Remove helmet from member
+/admin setup roles - Create team roles
+/admin setup payouts - Create payouts channel
+/help - Get help with commands
+/ping - Check bot latency
+/serverinfo - Get server info
 """
 
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 from discord import app_commands
 import sqlite3
 from datetime import datetime
@@ -18,7 +22,7 @@ import re
 
 logger = logging.getLogger('MistressLIV.Admin')
 
-# NFL Team data with custom helmet emojis (uploaded to server)
+# NFL Team data with custom helmet emojis
 NFL_TEAMS = {
     'ARI': {'name': 'Cardinals', 'emoji': '<:arihelmet:1458225274884849760>', 'color': 0x97233F},
     'ATL': {'name': 'Falcons', 'emoji': '<:atlhelmet:1458225284900851898>', 'color': 0xA71930},
@@ -54,10 +58,7 @@ NFL_TEAMS = {
     'WAS': {'name': 'Commanders', 'emoji': '<:washelmet:1458225528879186097>', 'color': 0x5A1414},
 }
 
-# Regex pattern to match custom Discord emojis in nicknames
 HELMET_EMOJI_PATTERN = re.compile(r'^<:[a-z]+helmet:\d+>\s*')
-
-# Legacy Unicode emojis (for backwards compatibility when removing)
 LEGACY_EMOJIS = ['🦬', '🐬', '🏈', '✈️', '🐦‍⬛', '🐅', '🟤', '⚙️', '🤠', '🐴', '🐆', '⚔️',
                 '🐎', '🪶', '☠️', '⚡', '⭐', '🗽', '🦅', '🎖️', '🐻', '🦁', '🧀', '⚜️',
                 '🏴‍☠️', '🐦', '🐏', '⛏️']
@@ -65,10 +66,7 @@ LEGACY_EMOJIS = ['🦬', '🐬', '🏈', '✈️', '🐦‍⬛', '🐅', '🟤',
 
 def remove_helmet_from_name(name):
     """Remove any helmet emoji prefix from a name."""
-    # Remove custom emoji pattern (e.g., <:bufhelmet:123456789>)
     name = HELMET_EMOJI_PATTERN.sub('', name)
-    
-    # Also remove any legacy Unicode emoji prefixes
     for emoji in LEGACY_EMOJIS:
         if name.startswith(emoji + ' '):
             name = name[len(emoji) + 1:]
@@ -76,7 +74,6 @@ def remove_helmet_from_name(name):
         elif name.startswith(emoji):
             name = name[len(emoji):]
             break
-    
     return name.strip()
 
 
@@ -88,8 +85,9 @@ class AdminCog(commands.Cog):
         self.db_path = bot.db_path
     
     def get_db_connection(self):
-        """Get a database connection."""
         return sqlite3.connect(self.db_path)
+    
+    # ==================== STANDALONE COMMANDS ====================
     
     @app_commands.command(name="help", description="Get help with bot commands")
     async def help_command(self, interaction: discord.Interaction):
@@ -97,90 +95,105 @@ class AdminCog(commands.Cog):
         embed = discord.Embed(
             title="🤖 Mistress LIV Bot - Help",
             description="Your comprehensive Madden league management bot!",
-            color=discord.Color.blue(),
-            timestamp=datetime.utcnow()
+            color=discord.Color.blue()
         )
         
-        # Payment Commands
         embed.add_field(
-            name="💰 Payment Commands",
-            value=(
-                "`/setpayment` - Set your payment methods (Venmo, Cash App, etc.)\n"
-                "`/mypayments` - View your payment info and balances\n"
-                "`/paymentinfo @user` - Look up someone's payment info\n"
-                "`/markpaid @user amount` - Mark a payment as completed\n"
-                "`/confirmpaid @user amount` - Confirm you received payment\n"
-                "`/dues` - View the season dues tracker"
-            ),
+            name="💰 Payments",
+            value="`/payments owedtome` `/payments iowe` `/payments status`",
             inline=False
         )
-        
-        # Wager Commands
         embed.add_field(
-            name="🎰 Wager Commands",
-            value=(
-                "`/wager @opponent amount` - Create a wager for your game\n"
-                "`/mywagers` - View your active wagers\n"
-                "`/markwagerpaid week` - Mark a wager as paid\n"
-                "`/wagerboard` - View the wager leaderboard"
-            ),
+            name="🎰 Wagers",
+            value="`/wager` `/acceptwager` `/declinewager` `/mywagers` `/wagerwin`",
             inline=False
         )
-        
-        # Stats Commands
         embed.add_field(
-            name="📊 Stats Commands",
-            value=(
-                "`/mystats` - View your franchise statistics\n"
-                "`/leaderboard [category]` - View franchise leaderboards\n"
-                "`/halloffame` - View the Hall of Fame\n"
-                "`/compare @user1 @user2` - Compare two users' stats"
-            ),
+            name="🏈 Best Ball",
+            value="`/bestball start` `/bestball join` `/bestball roster` `/bestball add`",
             inline=False
         )
-        
-        # Recruitment Commands
         embed.add_field(
-            name="📢 Recruitment Commands",
-            value=(
-                "`/openteams` - View currently open teams\n"
-                "`/recruitpreview` - Preview the recruitment post"
-            ),
+            name="📊 Profitability",
+            value="`/profit view` `/profit mine` `/profit structure`",
             inline=False
         )
-        
-        embed.set_footer(text="Mistress LIV Bot | Type /command for more info")
+        embed.add_field(
+            name="📜 League Info",
+            value="`/rules` `/dynamics` `/requirements` `/payouts`",
+            inline=False
+        )
+        embed.add_field(
+            name="⚙️ Admin",
+            value="`/admin helmet sync` `/admin setup roles` `/league setup`",
+            inline=False
+        )
         
         await interaction.response.send_message(embed=embed)
     
-    @app_commands.command(name="synchelmet", description="[Admin] Add helmet emoji to a member's nickname")
+    @app_commands.command(name="ping", description="Check bot latency")
+    async def ping(self, interaction: discord.Interaction):
+        """Check the bot's latency."""
+        latency = round(self.bot.latency * 1000)
+        status = "🟢 Excellent" if latency < 100 else "🟡 Good" if latency < 200 else "🔴 High"
+        
+        embed = discord.Embed(
+            title="🏓 Pong!",
+            description=f"**Latency:** {latency}ms\n**Status:** {status}",
+            color=discord.Color.green() if latency < 200 else discord.Color.red()
+        )
+        await interaction.response.send_message(embed=embed)
+    
+    @app_commands.command(name="serverinfo", description="Get server information")
+    async def server_info(self, interaction: discord.Interaction):
+        """Display server information."""
+        guild = interaction.guild
+        
+        embed = discord.Embed(
+            title=f"📊 {guild.name} Server Info",
+            color=discord.Color.blue()
+        )
+        
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
+        
+        embed.add_field(name="👥 Members", value=str(guild.member_count), inline=True)
+        embed.add_field(name="📝 Channels", value=str(len(guild.channels)), inline=True)
+        embed.add_field(name="🎭 Roles", value=str(len(guild.roles)), inline=True)
+        embed.add_field(name="📅 Created", value=guild.created_at.strftime("%B %d, %Y"), inline=True)
+        embed.add_field(name="👑 Owner", value=guild.owner.mention if guild.owner else "Unknown", inline=True)
+        
+        await interaction.response.send_message(embed=embed)
+
+    # ==================== ADMIN COMMAND GROUP ====================
+    
+    admin_group = app_commands.Group(name="admin", description="Admin commands")
+    helmet_group = app_commands.Group(name="helmet", description="Helmet emoji management", parent=admin_group)
+    setup_group = app_commands.Group(name="setup", description="Server setup commands", parent=admin_group)
+    
+    @helmet_group.command(name="sync", description="Add helmet emoji to a member's nickname")
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(member="The member to update")
-    async def sync_helmet(self, interaction: discord.Interaction, member: discord.Member):
-        """Manually sync a member's helmet emoji based on their team role."""
-        # Find their team role
+    async def helmet_sync(self, interaction: discord.Interaction, member: discord.Member):
+        """Sync a member's helmet emoji based on their team role."""
         team_role = None
         for role in member.roles:
-            role_name_upper = role.name.upper()
-            if role_name_upper in NFL_TEAMS:
-                team_role = role_name_upper
+            if role.name.upper() in NFL_TEAMS:
+                team_role = role.name.upper()
                 break
         
-        # Get base name (remove any existing emoji prefix)
         base_name = remove_helmet_from_name(member.display_name)
         
         if team_role:
-            # Member has a team role - add helmet emoji
             team_data = NFL_TEAMS[team_role]
-            emoji = team_data['emoji']
-            new_nickname = f"{emoji} {base_name}"
+            new_nickname = f"{team_data['emoji']} {base_name}"
         else:
-            # Member has no team role - remove helmet emoji
             new_nickname = base_name
             await interaction.response.send_message(
-                f"ℹ️ {member.display_name} doesn't have a team role. Removing any helmet emoji.",
+                f"ℹ️ {member.display_name} doesn't have a team role.",
                 ephemeral=True
             )
+            return
         
         try:
             if len(new_nickname) <= 32:
@@ -189,7 +202,6 @@ class AdminCog(commands.Cog):
                     f"✅ Updated {member.mention}'s nickname to: **{new_nickname}**"
                 )
             else:
-                # Truncate if too long
                 truncated = new_nickname[:32]
                 await member.edit(nick=truncated)
                 await interaction.response.send_message(
@@ -197,22 +209,21 @@ class AdminCog(commands.Cog):
                 )
         except discord.Forbidden:
             await interaction.response.send_message(
-                f"❌ Cannot change nickname for {member.display_name} - insufficient permissions",
+                f"❌ Cannot change nickname - insufficient permissions",
                 ephemeral=True
             )
     
-    @app_commands.command(name="syncallhelmets", description="[Admin] Add helmet emojis to all registered team owners")
+    @helmet_group.command(name="syncall", description="Add helmet emojis to all registered team owners")
     @app_commands.default_permissions(administrator=True)
-    async def sync_all_helmets(self, interaction: discord.Interaction):
-        """Sync helmet emojis for all registered team owners (uses database, no Server Members Intent needed)."""
-        await interaction.response.send_message("🏈 Syncing helmets for registered team owners...", ephemeral=True)
+    async def helmet_syncall(self, interaction: discord.Interaction):
+        """Sync helmet emojis for all registered team owners."""
+        await interaction.response.defer()
         
         updated = 0
         failed = 0
         skipped = 0
         not_found = 0
         
-        # Get registered owners from database
         try:
             conn = sqlite3.connect('data/mistress_liv.db')
             cursor = conn.cursor()
@@ -222,91 +233,62 @@ class AdminCog(commands.Cog):
             registered_owners = cursor.fetchall()
             conn.close()
         except Exception as e:
-            await interaction.edit_original_response(content=f"❌ Database error: {e}")
+            await interaction.followup.send(f"❌ Database error: {e}")
             return
         
         if not registered_owners:
-            await interaction.edit_original_response(
-                content="⚠️ No team owners registered! Have them run `/register` first."
-            )
+            await interaction.followup.send("⚠️ No team owners registered!")
             return
         
-        guild = interaction.guild
-        
-        for team_id, team_name, discord_id in registered_owners:
+        for team_id, team_name, user_id in registered_owners:
             try:
-                # Try to get member from guild
-                member = guild.get_member(discord_id)
-                if not member:
-                    # Try to fetch if not in cache
-                    try:
-                        member = await guild.fetch_member(discord_id)
-                    except:
-                        not_found += 1
-                        continue
-                
-                if member.bot:
-                    continue
-                
-                # Get team data
-                if team_id not in NFL_TEAMS:
-                    continue
-                
-                team_data = NFL_TEAMS[team_id]
-                emoji = team_data['emoji']
-                
-                # Get base name (remove any existing helmet)
-                base_name = remove_helmet_from_name(member.display_name)
-                new_nickname = f"{emoji} {base_name}"
-                
-                # Check if already has correct emoji
-                if member.display_name == new_nickname:
-                    skipped += 1
-                    continue
-                
-                # Update nickname
+                member = await interaction.guild.fetch_member(user_id)
+            except:
+                not_found += 1
+                continue
+            
+            if team_id.upper() not in NFL_TEAMS:
+                continue
+            
+            team_data = NFL_TEAMS[team_id.upper()]
+            base_name = remove_helmet_from_name(member.display_name)
+            new_nickname = f"{team_data['emoji']} {base_name}"
+            
+            if member.display_name.startswith(team_data['emoji']):
+                skipped += 1
+                continue
+            
+            try:
                 if len(new_nickname) <= 32:
                     await member.edit(nick=new_nickname if new_nickname != member.name else None)
                     updated += 1
                 else:
-                    truncated = new_nickname[:32]
-                    await member.edit(nick=truncated)
+                    await member.edit(nick=new_nickname[:32])
                     updated += 1
-                    
-            except discord.Forbidden:
-                failed += 1
-            except Exception as e:
-                logger.error(f"Error updating {team_id} owner: {e}")
+            except:
                 failed += 1
         
         embed = discord.Embed(
             title="🏈 Helmet Sync Complete",
-            description=f"Synced helmets for {len(registered_owners)} registered team owners!",
-            color=discord.Color.green(),
-            timestamp=datetime.utcnow()
+            color=discord.Color.green()
         )
         embed.add_field(name="✅ Updated", value=str(updated), inline=True)
         embed.add_field(name="⏭️ Already Set", value=str(skipped), inline=True)
         embed.add_field(name="❌ Failed", value=str(failed), inline=True)
         embed.add_field(name="🔍 Not Found", value=str(not_found), inline=True)
-        embed.add_field(name="📋 Registered", value=f"{len(registered_owners)}/32", inline=True)
         
-        if len(registered_owners) < 32:
-            embed.set_footer(text="Tip: Run /registerall to prompt unregistered owners to sign up")
-        
-        await interaction.edit_original_response(content=None, embed=embed)
+        await interaction.followup.send(embed=embed)
     
-    @app_commands.command(name="removehelmet", description="[Admin] Remove helmet emoji from a member's nickname")
+    @helmet_group.command(name="remove", description="Remove helmet emoji from a member's nickname")
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(member="The member to update")
-    async def remove_helmet(self, interaction: discord.Interaction, member: discord.Member):
+    async def helmet_remove(self, interaction: discord.Interaction, member: discord.Member):
         """Remove helmet emoji from a member's nickname."""
-        # Get base name (remove any existing emoji prefix)
         base_name = remove_helmet_from_name(member.display_name)
         
         if base_name == member.display_name:
             await interaction.response.send_message(
-                f"ℹ️ {member.display_name} doesn't have a helmet emoji to remove.",
+                f"ℹ️ {member.display_name} doesn't have a helmet emoji.",
                 ephemeral=True
             )
             return
@@ -318,11 +300,11 @@ class AdminCog(commands.Cog):
             )
         except discord.Forbidden:
             await interaction.response.send_message(
-                f"❌ Cannot change nickname for {member.display_name} - insufficient permissions",
+                f"❌ Cannot change nickname - insufficient permissions",
                 ephemeral=True
             )
     
-    @app_commands.command(name="setuproles", description="[Admin] Create team roles with proper colors")
+    @setup_group.command(name="roles", description="Create team roles with proper colors")
     @app_commands.default_permissions(administrator=True)
     async def setup_roles(self, interaction: discord.Interaction):
         """Create or update team roles with proper colors."""
@@ -332,19 +314,16 @@ class AdminCog(commands.Cog):
         updated = 0
         
         for team_id, team_data in NFL_TEAMS.items():
-            # Check if role exists
             existing_role = discord.utils.get(interaction.guild.roles, name=team_id)
             
             if existing_role:
-                # Update color if different
                 if existing_role.color.value != team_data['color']:
                     try:
                         await existing_role.edit(color=discord.Color(team_data['color']))
                         updated += 1
-                    except discord.Forbidden:
+                    except:
                         pass
             else:
-                # Create new role
                 try:
                     await interaction.guild.create_role(
                         name=team_id,
@@ -352,79 +331,31 @@ class AdminCog(commands.Cog):
                         reason="Mistress LIV Bot - Team role setup"
                     )
                     created += 1
-                except discord.Forbidden:
+                except:
                     pass
         
         embed = discord.Embed(
             title="🎨 Role Setup Complete",
-            color=discord.Color.green(),
-            timestamp=datetime.utcnow()
+            color=discord.Color.green()
         )
         embed.add_field(name="✅ Created", value=str(created), inline=True)
         embed.add_field(name="🔄 Updated", value=str(updated), inline=True)
         
         await interaction.followup.send(embed=embed)
     
-    @app_commands.command(name="ping", description="Check bot latency")
-    async def ping(self, interaction: discord.Interaction):
-        """Check the bot's latency."""
-        latency = round(self.bot.latency * 1000)
-        
-        if latency < 100:
-            status = "🟢 Excellent"
-        elif latency < 200:
-            status = "🟡 Good"
-        else:
-            status = "🔴 High"
-        
-        embed = discord.Embed(
-            title="🏓 Pong!",
-            description=f"**Latency:** {latency}ms\n**Status:** {status}",
-            color=discord.Color.green() if latency < 200 else discord.Color.red(),
-            timestamp=datetime.utcnow()
-        )
-        
-        await interaction.response.send_message(embed=embed)
-    
-    @app_commands.command(name="serverinfo", description="Get server information")
-    async def server_info(self, interaction: discord.Interaction):
-        """Display server information."""
-        guild = interaction.guild
-        
-        embed = discord.Embed(
-            title=f"📊 {guild.name} Server Info",
-            color=discord.Color.blue(),
-            timestamp=datetime.utcnow()
-        )
-        
-        if guild.icon:
-            embed.set_thumbnail(url=guild.icon.url)
-        
-        embed.add_field(name="👥 Members", value=str(guild.member_count), inline=True)
-        embed.add_field(name="📝 Channels", value=str(len(guild.channels)), inline=True)
-        embed.add_field(name="🎭 Roles", value=str(len(guild.roles)), inline=True)
-        embed.add_field(name="📅 Created", value=guild.created_at.strftime("%B %d, %Y"), inline=True)
-        embed.add_field(name="👑 Owner", value=guild.owner.mention if guild.owner else "Unknown", inline=True)
-        embed.add_field(name="🆔 Server ID", value=str(guild.id), inline=True)
-        
-        await interaction.response.send_message(embed=embed)
-    
-    @app_commands.command(name="createpayouts", description="[Admin] Create the payouts channel with restricted permissions")
+    @setup_group.command(name="payouts", description="Create the payouts channel")
     @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(
-        category="The category to create the channel in (optional)"
-    )
-    async def create_payouts_channel(
+    @app_commands.describe(category="The category to create the channel in")
+    async def setup_payouts(
         self,
         interaction: discord.Interaction,
         category: Optional[discord.CategoryChannel] = None
     ):
-        """Create a payouts channel where only commands and bot responses are allowed."""
+        """Create a payouts channel with restricted permissions."""
         await interaction.response.defer()
         
         guild = interaction.guild
         
-        # Check if channel already exists
         existing = discord.utils.get(guild.text_channels, name="payouts")
         if existing:
             await interaction.followup.send(
@@ -433,25 +364,23 @@ class AdminCog(commands.Cog):
             )
             return
         
-        # Set up permissions
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(
                 view_channel=True,
-                send_messages=False,  # Regular members can't send messages
+                send_messages=False,
                 read_message_history=True,
-                use_application_commands=True,  # But can use slash commands
+                use_application_commands=True,
                 add_reactions=False
             ),
             guild.me: discord.PermissionOverwrite(
                 view_channel=True,
-                send_messages=True,  # Bot can send messages
+                send_messages=True,
                 read_message_history=True,
                 manage_messages=True,
                 embed_links=True
             )
         }
         
-        # Add admin permissions
         for role in guild.roles:
             if role.permissions.administrator:
                 overwrites[role] = discord.PermissionOverwrite(
@@ -463,44 +392,30 @@ class AdminCog(commands.Cog):
                 )
         
         try:
-            # Create the channel
             channel = await guild.create_text_channel(
                 name="payouts",
                 category=category,
                 overwrites=overwrites,
-                topic="💰 League payouts and payment tracking. Use slash commands to interact.",
-                reason=f"Created by {interaction.user.display_name} via bot command"
+                topic="💰 League payouts and payment tracking"
             )
             
-            # Send welcome message
             welcome_embed = discord.Embed(
                 title="💰 League Payouts",
                 description=(
                     "Welcome to the payouts channel!\n\n"
-                    "This channel is for tracking league payments, dues, and profitability.\n"
-                    "**Payments are automatically generated after the Super Bowl!**\n\n"
                     "**Available Commands:**\n"
-                    "• `/mypayments` - View your payment info and balances\n"
-                    "• `/setpayment` - Set your payment methods\n"
-                    "• `/paymentinfo @user` - Look up someone's payment info\n"
-                    "• `/markpaid @user amount` - Mark a payment as sent\n"
-                    "• `/confirmpaid @user amount` - Confirm you received payment\n"
-                    "• `/dues` - View current season dues tracker\n"
-                    "• `/profitability` - View franchise profitability leaderboard\n"
-                    "• `/myprofit` - View your personal profit breakdown"
+                    "• `/payments owedtome` - See who owes you\n"
+                    "• `/payments iowe` - See who you owe\n"
+                    "• `/profit view` - View profitability leaderboard\n"
+                    "• `/profit mine` - View your profit breakdown"
                 ),
-                color=discord.Color.gold(),
-                timestamp=datetime.utcnow()
+                color=discord.Color.gold()
             )
-            welcome_embed.set_footer(text="Use /bothelp for all available commands")
             
             await channel.send(embed=welcome_embed)
             
             await interaction.followup.send(
-                f"✅ Created {channel.mention} with restricted permissions!\n"
-                f"• Members can view and use slash commands\n"
-                f"• Only the bot and admins can send messages",
-                ephemeral=False
+                f"✅ Created {channel.mention} with restricted permissions!"
             )
             
         except discord.Forbidden:
@@ -510,10 +425,7 @@ class AdminCog(commands.Cog):
             )
         except Exception as e:
             logger.error(f"Error creating payouts channel: {e}")
-            await interaction.followup.send(
-                f"❌ An error occurred: {str(e)}",
-                ephemeral=True
-            )
+            await interaction.followup.send(f"❌ An error occurred: {str(e)}", ephemeral=True)
 
 
 async def setup(bot):
