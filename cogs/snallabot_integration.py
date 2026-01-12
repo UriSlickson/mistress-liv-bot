@@ -119,7 +119,15 @@ class SnallabotIntegrationCog(commands.Cog):
         return TEAM_ID_TO_ABBR.get(team_id, 'UNK')
     
     async def get_snallabot_config(self, guild_id: int) -> Optional[Dict]:
-        """Get Snallabot config for a guild."""
+        """Get Snallabot config for a guild using the new league_config system."""
+        # Try to get config from the new LeagueConfigCog
+        league_config_cog = self.bot.get_cog('LeagueConfigCog')
+        if league_config_cog:
+            config = league_config_cog.get_league_config(guild_id)
+            if config:
+                return config
+        
+        # Fallback to legacy snallabot_config table
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('SELECT league_id, platform, current_season FROM snallabot_config WHERE guild_id = ?', (guild_id,))

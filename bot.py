@@ -100,7 +100,8 @@ class MistressLIVBot(commands.Bot):
         # Initialize database
         self.init_database()
         
-        # Load cogs
+        # Load cogs - league_config must be first as other cogs depend on it
+        await self.load_extension('cogs.league_config')
         await self.load_extension('cogs.payments')
         await self.load_extension('cogs.wagers')
         await self.load_extension('cogs.stats')

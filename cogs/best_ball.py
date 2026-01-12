@@ -223,17 +223,28 @@ class BestBallCog(commands.Cog):
         conn.close()
         logger.info("Best Ball tables initialized")
     
-    async def _get_snallabot_config(self) -> Optional[Dict]:
-        """Get Snallabot config from database."""
+    async def _get_snallabot_config(self, guild_id: int = None) -> Optional[Dict]:
+        """Get Snallabot config using the new league_config system."""
+        # Try to get config from the new LeagueConfigCog
+        league_config_cog = self.bot.get_cog('LeagueConfigCog')
+        if league_config_cog and guild_id:
+            config = league_config_cog.get_league_config(guild_id)
+            if config:
+                return config
+        
+        # Fallback to legacy snallabot_config table or defaults
         conn = self.get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT league_id, platform, current_season FROM snallabot_config LIMIT 1')
+        if guild_id:
+            cursor.execute('SELECT league_id, platform, current_season FROM snallabot_config WHERE guild_id = ?', (guild_id,))
+        else:
+            cursor.execute('SELECT league_id, platform, current_season FROM snallabot_config LIMIT 1')
         result = cursor.fetchone()
         conn.close()
         
         if result:
             return {'league_id': result[0], 'platform': result[1], 'current_season': result[2]}
-        return {'league_id': 'liv', 'platform': 'ps5', 'current_season': 2026}
+        return {'league_id': 'liv', 'platform': 'luna', 'current_season': 2026}
     
     async def _fetch_player_stats(self, platform: str, league_id: str, week: int) -> Optional[List]:
         """Fetch weekly player stats from Snallabot API."""
@@ -271,10 +282,17 @@ class BestBallCog(commands.Cog):
     
     @tasks.loop(hours=6)
     async def refresh_player_cache(self):
-        """Refresh the player cache from Snallabot."""
+        """Refresh the player cache from Snallabot for all configured guilds."""
         try:
-            config = await self._get_snallabot_config()
+            # Get config from first available guild (player data is shared)
+            config = None
+            for guild in self.bot.guilds:
+                config = await self._get_snallabot_config(guild.id)
+                if config and config.get('league_id'):
+                    break
+            
             if not config:
+                logger.warning("No league configuration found for player cache refresh")
                 return
             
             rosters = await self._fetch_rosters(config['platform'], config['league_id'])
