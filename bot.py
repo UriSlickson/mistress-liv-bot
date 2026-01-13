@@ -112,7 +112,6 @@ class MistressLIVBot(commands.Bot):
         await self.load_extension('cogs.profitability')
         await self.load_extension('cogs.announcements')
         await self.load_extension('cogs.registration')
-        await self.load_extension('cogs.whiner')
         await self.load_extension('cogs.auto_settlement')
         await self.load_extension('cogs.command_guide')
         await self.load_extension('cogs.auto_seeding')
@@ -460,10 +459,6 @@ class MistressLIVBot(commands.Bot):
             )
             embed.add_field(name="\ud83d\udcca Profitability", value=profit_cmds, inline=True)
             
-            # Fun Commands
-            fun_cmds = "`/whiner` - Who complains most\n`/mywhines` - Your complaint stats"
-            embed.add_field(name="\ud83d\ude24 Fun", value=fun_cmds, inline=True)
-            
             # Admin Commands
             admin_cmds = (
                 "`/announce` - Post announcement\n"
@@ -474,7 +469,7 @@ class MistressLIVBot(commands.Bot):
                 "`/setseeding` - Set playoff seeding\n"
                 "`/setplayoffwinner` - Record playoff win\n"
                 "`/clearplayoffresults` - Clear playoff data\n"
-                "`/resetwhiner` - Reset whiner stats\n"
+
                 "`/registerall` - Register all owners\n"
                 "`/setuproles` - Create team roles\n"
                 "`/settlewager` - Manually settle wager\n"

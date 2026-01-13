@@ -307,55 +307,6 @@ class ProfitabilityCog(commands.Cog):
     
     playoff_group = app_commands.Group(name="playoff", description="Playoff management commands (Admin)")
     
-    @playoff_group.command(name="seeding", description="Set NFC/AFC seeding for a season")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(
-        season="Season number",
-        conference="NFC or AFC",
-        seed="Seed number (1-16)",
-        user="The user who has this seed"
-    )
-    async def playoff_seeding(
-        self,
-        interaction: discord.Interaction,
-        season: int,
-        conference: str,
-        seed: int,
-        user: discord.Member
-    ):
-        """Set a team's seeding for a season."""
-        conference = conference.upper()
-        if conference not in ['NFC', 'AFC']:
-            await interaction.response.send_message("Conference must be NFC or AFC", ephemeral=True)
-            return
-            
-        if seed < 1 or seed > 16:
-            await interaction.response.send_message("Seed must be between 1 and 16", ephemeral=True)
-            return
-        
-        conn = self.get_db_connection()
-        cursor = conn.cursor()
-        
-        team_id = None
-        for role in user.roles:
-            if role.name.upper() in AFC_TEAMS + NFC_TEAMS:
-                team_id = role.name.upper()
-                break
-        
-        cursor.execute('''
-            INSERT OR REPLACE INTO season_standings 
-            (season, conference, seed, team_id, user_discord_id)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (season, conference, seed, team_id, user.id))
-        
-        conn.commit()
-        conn.close()
-        
-        await interaction.response.send_message(
-            f"✅ Set {user.display_name} as {conference} #{seed} seed for Season {season}",
-            ephemeral=True
-        )
-    
     @playoff_group.command(name="winner", description="Record a playoff round winner")
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
