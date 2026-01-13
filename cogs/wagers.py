@@ -121,6 +121,21 @@ class WagersCog(commands.Cog):
         self.db_path = bot.db_path
         self._ensure_tables()
     
+    def get_current_season(self, guild_id: int) -> int:
+        """Get the current season from league config, fallback to current year."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT current_season FROM guild_leagues 
+            WHERE guild_id = ? AND is_active = 1
+        ''', (guild_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row and row[0]:
+            return row[0]
+        return datetime.now().year
+    
     async def get_wagers_channel(self, guild):
         """Find the #wagers channel for logging. Creates it if it doesn't exist."""
         # Look for existing wagers channel
@@ -295,8 +310,8 @@ class WagersCog(commands.Cog):
         # Determine week type
         week_type = "regular" if week <= 18 else "playoffs"
         
-        # Get current season (use current year)
-        season_year = datetime.now().year
+        # Get current season from league config
+        season_year = self.get_current_season(interaction.guild_id)
         
         # Check if wager already exists for this exact game between these users
         conn = sqlite3.connect(self.db_path)

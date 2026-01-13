@@ -243,6 +243,73 @@ class AutoSettlementCog(commands.Cog):
         team_lower = team_input.lower().strip()
         return TEAM_NAME_TO_ABBR.get(team_lower)
     
+    async def check_snallabot_for_game(self, away_team: str, home_team: str, week: int) -> Optional[Dict]:
+        """Check Snallabot API for a specific game result."""
+        try:
+            import aiohttp
+            
+            # Get league config from any guild
+            for guild in self.bot.guilds:
+                league_config_cog = self.bot.get_cog('LeagueConfigCog')
+                if league_config_cog:
+                    config = league_config_cog.get_league_config(guild.id)
+                    if config:
+                        platform = config.get('platform', 'ps5')
+                        league_id = config.get('league_id', 'liv')
+                        break
+            else:
+                return None
+            
+            # Snallabot API URL
+            url = f"https://snallabot.me/{platform}/{league_id}/{week}/reg/schedules"
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=30) as response:
+                    if response.status != 200:
+                        return None
+                    
+                    schedule = await response.json()
+                    
+                    # Madden team ID to abbreviation mapping
+                    TEAM_ID_TO_ABBR = {
+                        0: 'CHI', 1: 'CIN', 2: 'BUF', 3: 'DEN', 4: 'CLE', 5: 'TB', 6: 'ARI', 7: 'LAC',
+                        8: 'KC', 9: 'IND', 10: 'DAL', 11: 'MIA', 12: 'PHI', 13: 'ATL', 14: 'SF', 15: 'NYG',
+                        16: 'JAX', 17: 'NYJ', 18: 'DET', 19: 'GB', 20: 'CAR', 21: 'NE', 22: 'LV', 23: 'LAR',
+                        24: 'BAL', 25: 'WAS', 26: 'NO', 27: 'SEA', 28: 'PIT', 29: 'TEN', 30: 'MIN', 31: 'HOU'
+                    }
+                    
+                    for game in schedule:
+                        game_home = TEAM_ID_TO_ABBR.get(game.get('homeTeamId'), '')
+                        game_away = TEAM_ID_TO_ABBR.get(game.get('awayTeamId'), '')
+                        
+                        # Check if this is our game (either order)
+                        if not ((game_home == home_team and game_away == away_team) or
+                                (game_home == away_team and game_away == home_team)):
+                            continue
+                        
+                        result = game.get('result', 1)
+                        if result == 2:  # AWAY_WIN
+                            winner = game_away
+                        elif result == 3:  # HOME_WIN
+                            winner = game_home
+                        else:
+                            continue  # Game not completed
+                        
+                        return {
+                            'away_team': game_away,
+                            'home_team': game_home,
+                            'away_score': game.get('awayScore', 0),
+                            'home_score': game.get('homeScore', 0),
+                            'winner': winner,
+                            'completed': True
+                        }
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error checking Snallabot for game: {e}")
+            return None
+    
     def parse_mymadden_score(self, content: str) -> Optional[dict]:
         """
         Parse a MyMadden score message.
@@ -415,16 +482,20 @@ class AutoSettlementCog(commands.Cog):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
+        # Match wagers where the two teams are playing, regardless of which is stored as home/away
+        # This handles cases where users may have entered teams in wrong order
         query = '''
             SELECT wager_id, season_year, week, home_team_id, away_team_id,
                    home_user_id, away_user_id, amount, challenger_pick, opponent_pick
             FROM wagers
             WHERE away_accepted = 1
             AND winner_user_id IS NULL
-            AND home_team_id = ?
-            AND away_team_id = ?
+            AND (
+                (home_team_id = ? AND away_team_id = ?)
+                OR (home_team_id = ? AND away_team_id = ?)
+            )
         '''
-        params = [home_team, away_team]
+        params = [home_team, away_team, away_team, home_team]
         
         if week:
             query += ' AND week = ?'
@@ -433,7 +504,7 @@ class AutoSettlementCog(commands.Cog):
         cursor.execute(query, params)
         wagers = cursor.fetchall()
         
-        logger.info(f"Found {len(wagers)} pending wagers for {away_team} @ {home_team}")
+        logger.info(f"Found {len(wagers)} pending wagers for game between {away_team} and {home_team}")
         
         for wager in wagers:
             wager_id, season, wager_week, h_team, a_team, home_user, away_user, amount, challenger_pick, opponent_pick = wager
@@ -577,16 +648,16 @@ class AutoSettlementCog(commands.Cog):
         logger.info(f"Found {len(pending_games)} games with pending wagers")
         
         for year, week, home_team, away_team in pending_games:
+            game_result = None
+            
             try:
-                # Try to get result from website
+                # Try to get result from MyMadden website first
                 website_result = await self.scraper.verify_game_result(
                     away_team, home_team, year, 'reg', week
                 )
                 
                 if website_result and website_result.get('completed') and website_result.get('winner'):
-                    logger.info(f"Found completed game on website: {away_team} @ {home_team}, winner: {website_result['winner']}")
-                    
-                    # Create game result dict
+                    logger.info(f"Found completed game on MyMadden: {away_team} @ {home_team}, winner: {website_result['winner']}")
                     game_result = {
                         'away_team': away_team,
                         'home_team': home_team,
@@ -598,7 +669,25 @@ class AutoSettlementCog(commands.Cog):
                         'verified': True,
                         'verification_source': 'MyMadden Website (periodic check)'
                     }
-                    
+                
+                # If MyMadden didn't have it, try Snallabot
+                if not game_result:
+                    snallabot_result = await self.check_snallabot_for_game(away_team, home_team, week)
+                    if snallabot_result:
+                        logger.info(f"Found completed game on Snallabot: {away_team} @ {home_team}, winner: {snallabot_result['winner']}")
+                        game_result = {
+                            'away_team': away_team,
+                            'home_team': home_team,
+                            'away_score': snallabot_result.get('away_score', 0),
+                            'home_score': snallabot_result.get('home_score', 0),
+                            'winner': snallabot_result['winner'],
+                            'year': year,
+                            'week': week,
+                            'verified': True,
+                            'verification_source': 'Snallabot API (periodic check)'
+                        }
+                
+                if game_result:
                     # Find a channel to send notifications
                     for guild in self.bot.guilds:
                         scores_channel = discord.utils.get(guild.text_channels, name='scores')
