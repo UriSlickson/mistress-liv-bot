@@ -136,6 +136,79 @@ class WagersCog(commands.Cog):
             return row[0]
         return datetime.now().year
     
+    def get_league_config(self, guild_id: int) -> Optional[dict]:
+        """Get league config for a guild."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT league_id, platform, current_season FROM guild_leagues 
+            WHERE guild_id = ? AND is_active = 1
+        ''', (guild_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return {'league_id': row[0], 'platform': row[1], 'current_season': row[2]}
+        return None
+    
+    async def validate_game_exists(self, guild_id: int, week: int, team1: str, team2: str) -> Optional[dict]:
+        """
+        Validate that a game exists in the schedule.
+        Returns the actual game info (with correct home/away) if found, None otherwise.
+        """
+        import aiohttp
+        
+        config = self.get_league_config(guild_id)
+        if not config:
+            logger.warning("No league config found, skipping schedule validation")
+            return {'home_team': team1, 'away_team': team2, 'validated': False}  # Allow without validation
+        
+        platform = config.get('platform', 'ps5')
+        league_id = config.get('league_id', 'liv')
+        
+        # Madden team ID to abbreviation mapping
+        TEAM_ID_TO_ABBR = {
+            0: 'CHI', 1: 'CIN', 2: 'BUF', 3: 'DEN', 4: 'CLE', 5: 'TB', 6: 'ARI', 7: 'LAC',
+            8: 'KC', 9: 'IND', 10: 'DAL', 11: 'MIA', 12: 'PHI', 13: 'ATL', 14: 'SF', 15: 'NYG',
+            16: 'JAX', 17: 'NYJ', 18: 'DET', 19: 'GB', 20: 'CAR', 21: 'NE', 22: 'LV', 23: 'LAR',
+            24: 'BAL', 25: 'WAS', 26: 'NO', 27: 'SEA', 28: 'PIT', 29: 'TEN', 30: 'MIN', 31: 'HOU'
+        }
+        
+        # Determine stage based on week
+        stage = 'reg' if week <= 18 else 'post'
+        
+        try:
+            url = f"https://snallabot.me/{platform}/{league_id}/{week}/{stage}/schedules"
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=30) as response:
+                    if response.status != 200:
+                        logger.warning(f"Snallabot API returned {response.status}, skipping validation")
+                        return {'home_team': team1, 'away_team': team2, 'validated': False}
+                    
+                    schedule = await response.json()
+                    
+                    for game in schedule:
+                        game_home = TEAM_ID_TO_ABBR.get(game.get('homeTeamId'), '')
+                        game_away = TEAM_ID_TO_ABBR.get(game.get('awayTeamId'), '')
+                        
+                        # Check if these two teams are playing (either order)
+                        if (game_home == team1 and game_away == team2) or \
+                           (game_home == team2 and game_away == team1):
+                            return {
+                                'home_team': game_home,
+                                'away_team': game_away,
+                                'validated': True
+                            }
+                    
+                    # Game not found in schedule
+                    return None
+                    
+        except Exception as e:
+            logger.error(f"Error validating game schedule: {e}")
+            # On error, allow the wager but mark as unvalidated
+            return {'home_team': team1, 'away_team': team2, 'validated': False}
+    
     async def get_wagers_channel(self, guild):
         """Find the #wagers channel for logging. Creates it if it doesn't exist."""
         # Look for existing wagers channel
@@ -304,8 +377,26 @@ class WagersCog(commands.Cog):
             await interaction.followup.send("❌ Away team and home team can't be the same!", ephemeral=True)
             return
         
+        # Validate that this game actually exists in the schedule
+        game_info = await self.validate_game_exists(interaction.guild_id, week, home_team_norm, away_team_norm)
+        
+        if game_info is None:
+            # Game doesn't exist in schedule
+            team1_name = TEAM_NAMES.get(away_team_norm, away_team_norm)
+            team2_name = TEAM_NAMES.get(home_team_norm, home_team_norm)
+            await interaction.followup.send(
+                f"❌ **Game not found!** {team1_name} vs {team2_name} are not playing each other in Week {week}.\n\n"
+                f"Please check the schedule and try again with the correct matchup.",
+                ephemeral=True
+            )
+            return
+        
+        # Use the correct home/away from the actual schedule
+        actual_home = game_info['home_team']
+        actual_away = game_info['away_team']
+        
         # Determine opponent's pick (opposite of yours)
-        opponent_pick = home_team_norm if your_pick_norm == away_team_norm else away_team_norm
+        opponent_pick = actual_home if your_pick_norm == actual_away else actual_away
         
         # Determine week type
         week_type = "regular" if week <= 18 else "playoffs"
@@ -317,39 +408,43 @@ class WagersCog(commands.Cog):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
+        # Check for existing wager with either team order
         cursor.execute('''
             SELECT wager_id FROM wagers 
             WHERE season_year = ? AND week = ?
-            AND home_team_id = ? AND away_team_id = ?
+            AND (
+                (home_team_id = ? AND away_team_id = ?)
+                OR (home_team_id = ? AND away_team_id = ?)
+            )
             AND ((home_user_id = ? AND away_user_id = ?) OR (home_user_id = ? AND away_user_id = ?))
             AND winner_user_id IS NULL
-        ''', (season_year, week, home_team_norm, away_team_norm, 
+        ''', (season_year, week, actual_home, actual_away, actual_away, actual_home,
               interaction.user.id, opponent.id, opponent.id, interaction.user.id))
         
         existing = cursor.fetchone()
         if existing:
             conn.close()
             await interaction.followup.send(
-                f"❌ You already have an active wager with {opponent.display_name} on {away_team_norm} @ {home_team_norm} for Week {week}!", 
+                f"❌ You already have an active wager with {opponent.display_name} on {actual_away} @ {actual_home} for Week {week}!", 
                 ephemeral=True
             )
             return
         
-        # Create the wager
+        # Create the wager with correct home/away from schedule
         cursor.execute('''
             INSERT INTO wagers (season_year, week, week_type, home_team_id, away_team_id, 
                                home_user_id, away_user_id, amount, home_accepted, challenger_pick, opponent_pick)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-        ''', (season_year, week, week_type, home_team_norm, away_team_norm, 
+        ''', (season_year, week, week_type, actual_home, actual_away, 
               interaction.user.id, opponent.id, amount, your_pick_norm, opponent_pick))
         
         wager_id = cursor.lastrowid
         conn.commit()
         conn.close()
         
-        # Get team full names
-        away_name = TEAM_NAMES.get(away_team_norm, away_team_norm)
-        home_name = TEAM_NAMES.get(home_team_norm, home_team_norm)
+        # Get team full names (using actual schedule home/away)
+        away_name = TEAM_NAMES.get(actual_away, actual_away)
+        home_name = TEAM_NAMES.get(actual_home, actual_home)
         pick_name = TEAM_NAMES.get(your_pick_norm, your_pick_norm)
         opp_pick_name = TEAM_NAMES.get(opponent_pick, opponent_pick)
         
