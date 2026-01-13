@@ -225,13 +225,13 @@ class WagersCog(commands.Cog):
         # Check if user is a welcher
         welcher_cog = self.bot.get_cog('WelcherCog')
         if welcher_cog:
-            if await welcher_cog.is_welcher(str(interaction.guild_id), str(interaction.user.id)):
+            if welcher_cog.is_welcher(str(interaction.guild_id), str(interaction.user.id)):
                 await interaction.followup.send(
                     "🚫 You are currently banned from wagering due to unpaid debts. Contact an admin to resolve.",
                     ephemeral=True
                 )
                 return
-            if await welcher_cog.is_welcher(str(interaction.guild_id), str(opponent.id)):
+            if welcher_cog.is_welcher(str(interaction.guild_id), str(opponent.id)):
                 await interaction.followup.send(
                     f"🚫 {opponent.mention} is currently banned from wagering due to unpaid debts.",
                     ephemeral=True
@@ -391,7 +391,7 @@ class WagersCog(commands.Cog):
         
         # Check if user is a welcher
         welcher_cog = self.bot.get_cog('WelcherCog')
-        if welcher_cog and await welcher_cog.is_welcher(str(interaction.guild_id), str(interaction.user.id)):
+        if welcher_cog and welcher_cog.is_welcher(str(interaction.guild_id), str(interaction.user.id)):
             await interaction.followup.send(
                 "🚫 You are currently banned from wagering due to unpaid debts. Contact an admin to resolve.",
                 ephemeral=True
