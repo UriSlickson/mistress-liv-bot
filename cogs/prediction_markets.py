@@ -46,6 +46,15 @@ SNALLABOT_API_BASE = "https://snallabot.me"
 MIN_PRICE = 5   # 5 cents minimum
 MAX_PRICE = 95  # 95 cents maximum
 
+# NFC Requirement
+NFC_MIN_VOLUME_REQUIREMENT = 100  # $100 minimum for NFC members
+NFC_DEADLINE_WEEK = 18  # Must be met by end of Week 18
+NFC_TEAMS = ['ARI', 'ATL', 'CAR', 'CHI', 'DAL', 'DET', 'GB', 'LAR', 
+             'MIN', 'NO', 'NYG', 'PHI', 'SF', 'SEA', 'TB', 'WAS',
+             'Cardinals', 'Falcons', 'Panthers', 'Bears', 'Cowboys', 'Lions',
+             'Packers', 'Rams', 'Vikings', 'Saints', 'Giants', 'Eagles',
+             '49ers', 'Seahawks', 'Buccaneers', 'Commanders']
+
 
 class PredictionMarketsCog(commands.Cog):
     """Cog for Kalshi-style prediction markets."""
@@ -55,9 +64,11 @@ class PredictionMarketsCog(commands.Cog):
         self.db_path = bot.db_path
         self._init_tables()
         self.update_market_odds.start()
+        self.check_nfc_requirements.start()
     
     def cog_unload(self):
         self.update_market_odds.cancel()
+        self.check_nfc_requirements.cancel()
     
     def _init_tables(self):
         """Initialize prediction markets database tables."""
@@ -1360,6 +1371,252 @@ class PredictionMarketsCog(commands.Cog):
     async def before_update_market_odds(self):
         """Wait for bot to be ready."""
         await self.bot.wait_until_ready()
+    
+    # ==================== NFC REQUIREMENT TRACKING ====================
+    
+    def _is_nfc_member(self, member: discord.Member) -> bool:
+        """Check if a member is an NFC team owner."""
+        for role in member.roles:
+            role_name = role.name.upper()
+            for nfc_team in NFC_TEAMS:
+                if nfc_team.upper() in role_name or role_name in nfc_team.upper():
+                    return True
+        return False
+    
+    def _get_user_prediction_volume(self, user_id: int, guild_id: int) -> int:
+        """Get total volume a user has traded in prediction markets."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Sum all trades (buys) for this user
+        cursor.execute('''
+            SELECT COALESCE(SUM(t.total_amount), 0)
+            FROM prediction_trades t
+            JOIN prediction_markets m ON t.market_id = m.market_id
+            WHERE (t.buyer_id = ? OR t.seller_id = ?) AND m.guild_id = ?
+        ''', (user_id, user_id, guild_id))
+        
+        volume = cursor.fetchone()[0]
+        conn.close()
+        
+        return volume // 100  # Convert cents to dollars
+    
+    def _get_nfc_members_status(self, guild: discord.Guild) -> List[Dict]:
+        """Get all NFC members and their prediction market status."""
+        nfc_status = []
+        
+        for member in guild.members:
+            if member.bot:
+                continue
+            
+            if self._is_nfc_member(member):
+                volume = self._get_user_prediction_volume(member.id, guild.id)
+                remaining = max(0, NFC_MIN_VOLUME_REQUIREMENT - volume)
+                
+                nfc_status.append({
+                    'user_id': member.id,
+                    'name': member.display_name,
+                    'volume': volume,
+                    'remaining': remaining,
+                    'met_requirement': volume >= NFC_MIN_VOLUME_REQUIREMENT
+                })
+        
+        return nfc_status
+    
+    async def _get_current_week(self, guild_id: int) -> int:
+        """Get current week from Snallabot."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT league_id FROM league_config WHERE guild_id = ? AND is_active = 1
+            ''', (guild_id,))
+            row = cursor.fetchone()
+            conn.close()
+            
+            if not row:
+                return 0
+            
+            league_id = row[0]
+            
+            async with aiohttp.ClientSession() as session:
+                url = f"{SNALLABOT_API_BASE}/league/{league_id}/week"
+                async with session.get(url, timeout=10) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        return data.get('week', 0)
+        except Exception as e:
+            logger.error(f"Error getting current week: {e}")
+        
+        return 0
+    
+    @tasks.loop(hours=24)
+    async def check_nfc_requirements(self):
+        """Daily check for NFC prediction market requirements."""
+        logger.info("Running daily NFC requirement check...")
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Get all guilds with active markets
+        cursor.execute('''
+            SELECT DISTINCT guild_id FROM prediction_markets WHERE status = 'active'
+        ''')
+        
+        guilds = cursor.fetchall()
+        conn.close()
+        
+        for (guild_id,) in guilds:
+            guild = self.bot.get_guild(guild_id)
+            if not guild:
+                continue
+            
+            # Get current week
+            current_week = await self._get_current_week(guild_id)
+            
+            # Only alert if we're approaching Week 18 deadline
+            if current_week < 14:  # Start alerting from Week 14
+                continue
+            
+            weeks_remaining = NFC_DEADLINE_WEEK - current_week
+            
+            # Get NFC members who haven't met requirement
+            nfc_status = self._get_nfc_members_status(guild)
+            non_compliant = [m for m in nfc_status if not m['met_requirement']]
+            
+            if not non_compliant:
+                continue
+            
+            # Find prediction-markets or announcements channel
+            channel = discord.utils.get(guild.text_channels, name='prediction-markets')
+            if not channel:
+                channel = discord.utils.get(guild.text_channels, name='announcements')
+            if not channel:
+                channel = discord.utils.get(guild.text_channels, name='townsquare')
+            
+            if not channel:
+                continue
+            
+            # Create alert embed
+            urgency = "🚨" if weeks_remaining <= 2 else "⚠️" if weeks_remaining <= 4 else "📢"
+            color = discord.Color.red() if weeks_remaining <= 2 else discord.Color.orange() if weeks_remaining <= 4 else discord.Color.blue()
+            
+            embed = discord.Embed(
+                title=f"{urgency} NFC Prediction Market Requirement Alert",
+                description=f"**NFC members must place at least ${NFC_MIN_VOLUME_REQUIREMENT} in prediction markets by end of Week {NFC_DEADLINE_WEEK}!**\n\n"
+                           f"Current Week: **{current_week}**\n"
+                           f"Weeks Remaining: **{weeks_remaining}**",
+                color=color,
+                timestamp=datetime.now()
+            )
+            
+            # List non-compliant members
+            non_compliant_str = ""
+            for m in sorted(non_compliant, key=lambda x: x['remaining'], reverse=True):
+                non_compliant_str += f"• **{m['name']}**: ${m['volume']} traded (need ${m['remaining']} more)\n"
+            
+            embed.add_field(
+                name=f"📋 NFC Members Below ${NFC_MIN_VOLUME_REQUIREMENT} ({len(non_compliant)})",
+                value=non_compliant_str[:1024] if non_compliant_str else "All NFC members have met the requirement! 🎉",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="💡 How to Participate",
+                value="1. View markets: `/market view`\n"
+                      "2. Place a trade: `/trade [marketID] Yes buy 10 50`\n"
+                      "3. Check your status: `/nfcstatus`",
+                inline=False
+            )
+            
+            embed.set_footer(text="Requirement: $100 minimum in prediction markets by Week 18")
+            
+            await channel.send(embed=embed)
+            
+            # DM members who are very behind (less than 50% and within 4 weeks)
+            if weeks_remaining <= 4:
+                for m in non_compliant:
+                    if m['volume'] < NFC_MIN_VOLUME_REQUIREMENT / 2:
+                        member = guild.get_member(m['user_id'])
+                        if member:
+                            try:
+                                dm_embed = discord.Embed(
+                                    title=f"{urgency} Prediction Market Requirement Reminder",
+                                    description=f"Hi {member.display_name}!\n\n"
+                                               f"As an NFC team owner, you need to place at least **${NFC_MIN_VOLUME_REQUIREMENT}** in prediction markets by **Week {NFC_DEADLINE_WEEK}**.\n\n"
+                                               f"**Your current volume:** ${m['volume']}\n"
+                                               f"**Still needed:** ${m['remaining']}\n"
+                                               f"**Weeks remaining:** {weeks_remaining}",
+                                    color=color
+                                )
+                                dm_embed.add_field(
+                                    name="Quick Start",
+                                    value="Use `/market view` to see available markets, then `/trade` to participate!",
+                                    inline=False
+                                )
+                                await member.send(embed=dm_embed)
+                            except discord.Forbidden:
+                                pass  # Can't DM this user
+    
+    @check_nfc_requirements.before_loop
+    async def before_check_nfc_requirements(self):
+        """Wait for bot to be ready."""
+        await self.bot.wait_until_ready()
+    
+    @app_commands.command(name="nfcstatus", description="Check NFC prediction market requirement status")
+    async def nfc_status(self, interaction: discord.Interaction):
+        """Check NFC members' prediction market requirement status."""
+        await interaction.response.defer()
+        
+        nfc_status = self._get_nfc_members_status(interaction.guild)
+        
+        if not nfc_status:
+            await interaction.followup.send("No NFC team owners found.", ephemeral=True)
+            return
+        
+        current_week = await self._get_current_week(interaction.guild.id)
+        weeks_remaining = max(0, NFC_DEADLINE_WEEK - current_week)
+        
+        # Separate compliant and non-compliant
+        compliant = [m for m in nfc_status if m['met_requirement']]
+        non_compliant = sorted([m for m in nfc_status if not m['met_requirement']], 
+                               key=lambda x: x['remaining'], reverse=True)
+        
+        embed = discord.Embed(
+            title="📊 NFC Prediction Market Requirement Status",
+            description=f"**Requirement:** ${NFC_MIN_VOLUME_REQUIREMENT} minimum by Week {NFC_DEADLINE_WEEK}\n"
+                       f"**Current Week:** {current_week} | **Weeks Remaining:** {weeks_remaining}",
+            color=discord.Color.blue(),
+            timestamp=datetime.now()
+        )
+        
+        # Compliant members
+        if compliant:
+            compliant_str = "\n".join([f"✅ **{m['name']}**: ${m['volume']}" for m in compliant[:10]])
+            if len(compliant) > 10:
+                compliant_str += f"\n... and {len(compliant) - 10} more"
+            embed.add_field(name=f"✅ Met Requirement ({len(compliant)})", value=compliant_str, inline=False)
+        
+        # Non-compliant members
+        if non_compliant:
+            non_compliant_str = "\n".join([f"❌ **{m['name']}**: ${m['volume']} (need ${m['remaining']} more)" 
+                                           for m in non_compliant[:10]])
+            if len(non_compliant) > 10:
+                non_compliant_str += f"\n... and {len(non_compliant) - 10} more"
+            embed.add_field(name=f"❌ Below Requirement ({len(non_compliant)})", value=non_compliant_str, inline=False)
+        
+        # Check if user is NFC and show their status
+        user_status = next((m for m in nfc_status if m['user_id'] == interaction.user.id), None)
+        if user_status:
+            status_emoji = "✅" if user_status['met_requirement'] else "❌"
+            remaining_text = 'Requirement met! 🎉' if user_status['met_requirement'] else f"Need ${user_status['remaining']} more"
+            embed.add_field(
+                name="📍 Your Status",
+                value=f"{status_emoji} Volume: ${user_status['volume']} / ${NFC_MIN_VOLUME_REQUIREMENT}\n{remaining_text}",
+                inline=False
+            )
+        
+        await interaction.followup.send(embed=embed)
 
 
 async def setup(bot):
