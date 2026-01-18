@@ -16,6 +16,42 @@ import logging
 
 logger = logging.getLogger('MistressLIV.Announcements')
 
+# Team abbreviations and full names for matching
+TEAM_IDENTIFIERS = {
+    'ARI': ['ARI', 'CARDINALS', 'ARIZONA'],
+    'ATL': ['ATL', 'FALCONS', 'ATLANTA'],
+    'BAL': ['BAL', 'RAVENS', 'BALTIMORE'],
+    'BUF': ['BUF', 'BILLS', 'BUFFALO'],
+    'CAR': ['CAR', 'PANTHERS', 'CAROLINA'],
+    'CHI': ['CHI', 'BEARS', 'CHICAGO'],
+    'CIN': ['CIN', 'BENGALS', 'CINCINNATI'],
+    'CLE': ['CLE', 'BROWNS', 'CLEVELAND'],
+    'DAL': ['DAL', 'COWBOYS', 'DALLAS'],
+    'DEN': ['DEN', 'BRONCOS', 'DENVER'],
+    'DET': ['DET', 'LIONS', 'DETROIT'],
+    'GB': ['GB', 'PACKERS', 'GREEN BAY', 'GREENBAY'],
+    'HOU': ['HOU', 'TEXANS', 'HOUSTON'],
+    'IND': ['IND', 'COLTS', 'INDIANAPOLIS'],
+    'JAX': ['JAX', 'JAGUARS', 'JACKSONVILLE'],
+    'KC': ['KC', 'CHIEFS', 'KANSAS CITY', 'KANSASCITY'],
+    'LAC': ['LAC', 'CHARGERS', 'LA CHARGERS'],
+    'LAR': ['LAR', 'RAMS', 'LA RAMS'],
+    'LV': ['LV', 'RAIDERS', 'LAS VEGAS', 'LASVEGAS'],
+    'MIA': ['MIA', 'DOLPHINS', 'MIAMI'],
+    'MIN': ['MIN', 'VIKINGS', 'MINNESOTA'],
+    'NE': ['NE', 'PATRIOTS', 'NEW ENGLAND', 'NEWENGLAND'],
+    'NO': ['NO', 'SAINTS', 'NEW ORLEANS', 'NEWORLEANS'],
+    'NYG': ['NYG', 'GIANTS', 'NY GIANTS'],
+    'NYJ': ['NYJ', 'JETS', 'NY JETS'],
+    'PHI': ['PHI', 'EAGLES', 'PHILADELPHIA'],
+    'PIT': ['PIT', 'STEELERS', 'PITTSBURGH'],
+    'SEA': ['SEA', 'SEAHAWKS', 'SEATTLE'],
+    'SF': ['SF', '49ERS', 'NINERS', 'SAN FRANCISCO', 'SANFRANCISCO'],
+    'TB': ['TB', 'BUCCANEERS', 'BUCS', 'TAMPA BAY', 'TAMPABAY'],
+    'TEN': ['TEN', 'TITANS', 'TENNESSEE'],
+    'WAS': ['WAS', 'COMMANDERS', 'WASHINGTON'],
+}
+
 
 class AnnouncementsCog(commands.Cog):
     """Cog for admin announcements and channel management."""
@@ -27,21 +63,27 @@ class AnnouncementsCog(commands.Cog):
     def get_db_connection(self):
         return sqlite3.connect(self.db_path)
     
+    def _is_team_role(self, role_name: str) -> bool:
+        """Check if a role name matches any team identifier."""
+        role_upper = role_name.upper()
+        for team, identifiers in TEAM_IDENTIFIERS.items():
+            for identifier in identifiers:
+                if identifier in role_upper or role_upper in identifier:
+                    return True
+        return False
+    
     def _get_team_owners(self, guild: discord.Guild) -> list:
         """Get all members with team roles."""
-        team_roles = ['ARI', 'ATL', 'BAL', 'BUF', 'CAR', 'CHI', 'CIN', 'CLE', 
-                      'DAL', 'DEN', 'DET', 'GB', 'HOU', 'IND', 'JAX', 'KC',
-                      'LAC', 'LAR', 'LV', 'MIA', 'MIN', 'NE', 'NO', 'NYG',
-                      'NYJ', 'PHI', 'PIT', 'SEA', 'SF', 'TB', 'TEN', 'WAS']
-        
         owners = []
         for member in guild.members:
             if member.bot:
                 continue
             for role in member.roles:
-                if role.name.upper() in team_roles:
+                if self._is_team_role(role.name):
                     owners.append(member)
                     break
+        
+        logger.info(f"Found {len(owners)} team owners in {guild.name}")
         return owners
 
     # ==================== ANNOUNCE COMMAND GROUP ====================
@@ -72,26 +114,46 @@ class AnnouncementsCog(commands.Cog):
         if townsquare:
             await townsquare.send(embed=embed)
             posted_to.append(townsquare.mention)
+            logger.info(f"Posted announcement to #townsquare")
+        else:
+            logger.warning("Could not find #townsquare channel")
         
         # Post to announcements
         if announcements:
             await announcements.send(embed=embed)
             posted_to.append(announcements.mention)
+            logger.info(f"Posted announcement to #announcements")
+        else:
+            logger.warning("Could not find #announcements channel")
         
         # DM all league members
         owners = self._get_team_owners(interaction.guild)
         dm_count = 0
         dm_failed = 0
+        failed_members = []
+        
+        logger.info(f"Attempting to DM {len(owners)} team owners")
         
         for owner in owners:
             try:
                 await owner.send(embed=embed)
                 dm_count += 1
-            except:
+                logger.info(f"Successfully DMed {owner.display_name}")
+            except discord.Forbidden:
                 dm_failed += 1
+                failed_members.append(f"{owner.display_name} (DMs disabled)")
+                logger.warning(f"Cannot DM {owner.display_name} - DMs disabled")
+            except Exception as e:
+                dm_failed += 1
+                failed_members.append(f"{owner.display_name} ({str(e)[:20]})")
+                logger.error(f"Failed to DM {owner.display_name}: {e}")
         
         result = f"✅ Posted to: {', '.join(posted_to) if posted_to else 'No channels found'}"
-        result += f"\n📬 DMed {dm_count} league members ({dm_failed} failed)"
+        result += f"\n📬 DMed {dm_count} league members"
+        if dm_failed > 0:
+            result += f" ({dm_failed} failed)"
+            if len(failed_members) <= 5:
+                result += f"\nFailed: {', '.join(failed_members)}"
         
         await interaction.followup.send(result, ephemeral=True)
     
@@ -148,18 +210,28 @@ class AnnouncementsCog(commands.Cog):
         
         success = 0
         failed = 0
+        failed_members = []
+        
+        logger.info(f"Attempting to DM {len(owners)} team owners")
         
         for owner in owners:
             try:
                 await owner.send(embed=embed)
                 success += 1
-            except:
+            except discord.Forbidden:
                 failed += 1
+                failed_members.append(f"{owner.display_name} (DMs disabled)")
+            except Exception as e:
+                failed += 1
+                failed_members.append(f"{owner.display_name}")
         
-        await interaction.followup.send(
-            f"✅ DMed {success} league members ({failed} failed)",
-            ephemeral=True
-        )
+        result = f"✅ DMed {success} league members"
+        if failed > 0:
+            result += f" ({failed} failed)"
+            if len(failed_members) <= 5:
+                result += f"\nFailed: {', '.join(failed_members)}"
+        
+        await interaction.followup.send(result, ephemeral=True)
 
     # ==================== STANDALONE COMMANDS ====================
     

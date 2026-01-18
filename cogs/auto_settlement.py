@@ -243,6 +243,17 @@ class AutoSettlementCog(commands.Cog):
         team_lower = team_input.lower().strip()
         return TEAM_NAME_TO_ABBR.get(team_lower)
     
+    def get_current_league_season(self) -> int:
+        """Get the current season from league config for any guild."""
+        for guild in self.bot.guilds:
+            league_config_cog = self.bot.get_cog('LeagueConfigCog')
+            if league_config_cog:
+                config = league_config_cog.get_league_config(guild.id)
+                if config and config.get('current_season'):
+                    return config['current_season']
+        # Fallback to current year if no config found
+        return datetime.now().year
+    
     async def check_snallabot_for_game(self, away_team: str, home_team: str, week: int) -> Optional[Dict]:
         """Check Snallabot API for a specific game result."""
         try:
@@ -623,17 +634,21 @@ class AutoSettlementCog(commands.Cog):
     
     @tasks.loop(minutes=30)
     async def check_pending_wagers(self):
-        """Periodically check for pending wagers and try to settle them using MyMadden website."""
+        """Periodically check for pending wagers and try to settle them using Snallabot/MyMadden."""
         await self.bot.wait_until_ready()
         
         logger.info("Running periodic wager check...")
         
+        # Get the CURRENT league season from config (not the stored wager season)
+        current_season = self.get_current_league_season()
+        logger.info(f"Using current league season: {current_season}")
+        
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Get pending wagers grouped by game
+        # Get pending wagers grouped by game (ignore stored season_year, we'll use current)
         cursor.execute('''
-            SELECT DISTINCT season_year, week, home_team_id, away_team_id
+            SELECT DISTINCT week, home_team_id, away_team_id
             FROM wagers
             WHERE away_accepted = 1 AND winner_user_id IS NULL
         ''')
@@ -647,44 +662,44 @@ class AutoSettlementCog(commands.Cog):
         
         logger.info(f"Found {len(pending_games)} games with pending wagers")
         
-        for year, week, home_team, away_team in pending_games:
+        for week, home_team, away_team in pending_games:
             game_result = None
             
             try:
-                # Try to get result from MyMadden website first
-                website_result = await self.scraper.verify_game_result(
-                    away_team, home_team, year, 'reg', week
-                )
-                
-                if website_result and website_result.get('completed') and website_result.get('winner'):
-                    logger.info(f"Found completed game on MyMadden: {away_team} @ {home_team}, winner: {website_result['winner']}")
+                # Try Snallabot FIRST (more reliable for current season)
+                snallabot_result = await self.check_snallabot_for_game(away_team, home_team, week)
+                if snallabot_result and snallabot_result.get('winner'):
+                    logger.info(f"Found completed game on Snallabot: {away_team} @ {home_team}, winner: {snallabot_result['winner']}")
                     game_result = {
-                        'away_team': away_team,
-                        'home_team': home_team,
-                        'away_score': website_result['away_score'],
-                        'home_score': website_result['home_score'],
-                        'winner': website_result['winner'],
-                        'year': year,
+                        'away_team': snallabot_result.get('away_team', away_team),
+                        'home_team': snallabot_result.get('home_team', home_team),
+                        'away_score': snallabot_result.get('away_score', 0),
+                        'home_score': snallabot_result.get('home_score', 0),
+                        'winner': snallabot_result['winner'],
+                        'year': current_season,
                         'week': week,
                         'verified': True,
-                        'verification_source': 'MyMadden Website (periodic check)'
+                        'verification_source': 'Snallabot API (periodic check)'
                     }
                 
-                # If MyMadden didn't have it, try Snallabot
+                # If Snallabot didn't have it, try MyMadden website
                 if not game_result:
-                    snallabot_result = await self.check_snallabot_for_game(away_team, home_team, week)
-                    if snallabot_result:
-                        logger.info(f"Found completed game on Snallabot: {away_team} @ {home_team}, winner: {snallabot_result['winner']}")
+                    website_result = await self.scraper.verify_game_result(
+                        away_team, home_team, current_season, 'reg', week
+                    )
+                    
+                    if website_result and website_result.get('completed') and website_result.get('winner'):
+                        logger.info(f"Found completed game on MyMadden: {away_team} @ {home_team}, winner: {website_result['winner']}")
                         game_result = {
                             'away_team': away_team,
                             'home_team': home_team,
-                            'away_score': snallabot_result.get('away_score', 0),
-                            'home_score': snallabot_result.get('home_score', 0),
-                            'winner': snallabot_result['winner'],
-                            'year': year,
+                            'away_score': website_result['away_score'],
+                            'home_score': website_result['home_score'],
+                            'winner': website_result['winner'],
+                            'year': current_season,
                             'week': week,
                             'verified': True,
-                            'verification_source': 'Snallabot API (periodic check)'
+                            'verification_source': 'MyMadden Website (periodic check)'
                         }
                 
                 if game_result:
@@ -695,7 +710,10 @@ class AutoSettlementCog(commands.Cog):
                             settled = await self.settle_wagers_for_game(game_result, scores_channel)
                             if settled:
                                 await self.send_settlement_notifications(settled, scores_channel)
+                                logger.info(f"Successfully settled {len(settled)} wagers for {away_team} @ {home_team}")
                             break
+                else:
+                    logger.info(f"No completed game found for {away_team} @ {home_team} Week {week}")
                             
             except Exception as e:
                 logger.error(f"Error checking game {away_team} @ {home_team}: {e}")
@@ -933,7 +951,7 @@ class AutoSettlementCog(commands.Cog):
         
         await interaction.followup.send(embed=embed)
     
-    @app_commands.command(name="forcecheckwagers", description="Force check all pending wagers against MyMadden website")
+    @app_commands.command(name="forcecheckwagers", description="Force check all pending wagers against Snallabot/MyMadden")
     async def forcecheckwagers(self, interaction: discord.Interaction):
         """Admin command to force check all pending wagers."""
         if not interaction.user.guild_permissions.administrator:
@@ -942,10 +960,54 @@ class AutoSettlementCog(commands.Cog):
         
         await interaction.response.defer()
         
+        # Get current league season
+        current_season = self.get_current_league_season()
+        
+        # Get count of pending wagers before check
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT COUNT(*), GROUP_CONCAT(DISTINCT week || ':' || home_team_id || '@' || away_team_id)
+            FROM wagers
+            WHERE away_accepted = 1 AND winner_user_id IS NULL
+        ''')
+        before_count, pending_games = cursor.fetchone()
+        conn.close()
+        
         # Trigger the periodic check manually
         await self.check_pending_wagers()
         
-        await interaction.followup.send("✅ Forced check of all pending wagers completed. Check #scores for any settlements.")
+        # Get count after check
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT COUNT(*) FROM wagers
+            WHERE away_accepted = 1 AND winner_user_id IS NULL
+        ''')
+        after_count = cursor.fetchone()[0]
+        conn.close()
+        
+        settled_count = before_count - after_count
+        
+        embed = discord.Embed(
+            title="🔍 Force Check Wagers Complete",
+            color=discord.Color.green() if settled_count > 0 else discord.Color.blue()
+        )
+        embed.add_field(name="League Season", value=str(current_season), inline=True)
+        embed.add_field(name="Pending Before", value=str(before_count), inline=True)
+        embed.add_field(name="Settled", value=str(settled_count), inline=True)
+        embed.add_field(name="Still Pending", value=str(after_count), inline=True)
+        
+        if pending_games:
+            games_list = pending_games.split(',')[:5]  # Show first 5
+            embed.add_field(name="Games Checked", value="\n".join(games_list), inline=False)
+        
+        if settled_count > 0:
+            embed.add_field(name="📢 Notifications", value="Check #scores for settlement details", inline=False)
+        elif before_count > 0:
+            embed.add_field(name="ℹ️ Note", value="Games may not be completed yet, or couldn't find results in Snallabot/MyMadden", inline=False)
+        
+        await interaction.followup.send(embed=embed)
 
 
 async def setup(bot):
