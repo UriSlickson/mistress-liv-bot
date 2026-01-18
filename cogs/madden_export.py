@@ -1,6 +1,9 @@
 """
-Madden Export Integration Cog - Automatically imports playoff data from Madden Export API
-and generates earnings/payments when playoff results are detected.
+Madden Export Integration Cog - Automatically imports playoff data and generates payments.
+Data Source Priority:
+1. Snallabot API (primary)
+2. Madden Export API (fallback)
+
 Commands:
 - /autoplayoffs - Import standings and generate payments (all-in-one)
 - /checkexportapi - Check API status
@@ -18,7 +21,8 @@ from typing import Optional, Dict
 
 logger = logging.getLogger('MistressLIV.MaddenExport')
 
-# Madden Export API URL
+# API URLs
+SNALLABOT_API_BASE = "https://snallabot.me"
 MADDEN_EXPORT_API_URL = os.environ.get('MADDEN_EXPORT_API_URL', 'https://web-production-eee7f.up.railway.app')
 
 # Team ID to abbreviation mapping (Madden uses numeric IDs)
@@ -61,7 +65,7 @@ NFC_PAIRED_RATE = 0.80
 
 
 class MaddenExportCog(commands.Cog):
-    """Cog for integrating with Madden Export API and auto-generating payments."""
+    """Cog for integrating with Snallabot/Madden Export API and auto-generating payments."""
     
     def __init__(self, bot):
         self.bot = bot
@@ -69,15 +73,82 @@ class MaddenExportCog(commands.Cog):
         self.api_url = MADDEN_EXPORT_API_URL
         self.last_standings_hash = None
     
-    async def fetch_standings(self) -> Optional[Dict]:
-        """Fetch current standings from Madden Export API."""
+    async def get_snallabot_config(self, guild_id: int) -> Optional[Dict]:
+        """Get Snallabot configuration for a guild."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Try league_config first
+        cursor.execute('''
+            SELECT league_id, platform, current_season FROM league_config 
+            WHERE guild_id = ? AND is_active = 1
+        ''', (guild_id,))
+        row = cursor.fetchone()
+        
+        if row:
+            conn.close()
+            return {'league_id': row[0], 'platform': row[1], 'current_season': row[2]}
+        
+        # Fallback to snallabot_config
+        cursor.execute('SELECT league_id, platform, current_season FROM snallabot_config WHERE guild_id = ?', (guild_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return {'league_id': row[0], 'platform': row[1], 'current_season': row[2]}
+        return None
+    
+    async def fetch_standings_from_snallabot(self, guild_id: int) -> Optional[Dict]:
+        """Fetch current standings from Snallabot API (PRIMARY SOURCE)."""
+        config = await self.get_snallabot_config(guild_id)
+        if not config:
+            logger.warning("No Snallabot config found, cannot fetch from Snallabot")
+            return None
+        
+        league_id = config.get('league_id', 'liv')
+        platform = config.get('platform', 'xboxone')
+        
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"{self.api_url}/api/standings") as resp:
+                url = f"{SNALLABOT_API_BASE}/{platform}/{league_id}/standings"
+                logger.info(f"Fetching standings from Snallabot: {url}")
+                
+                async with session.get(url, timeout=30) as resp:
                     if resp.status == 200:
-                        return await resp.json()
+                        data = await resp.json()
+                        logger.info(f"Successfully fetched standings from Snallabot")
+                        return {'source': 'snallabot', 'data': data}
         except Exception as e:
-            logger.error(f"Error fetching standings: {e}")
+            logger.error(f"Error fetching standings from Snallabot: {e}")
+        return None
+    
+    async def fetch_standings_from_madden_export(self) -> Optional[Dict]:
+        """Fetch current standings from Madden Export API (FALLBACK SOURCE)."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{self.api_url}/api/standings", timeout=30) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        logger.info(f"Successfully fetched standings from Madden Export API")
+                        return {'source': 'madden_export', 'data': data}
+        except Exception as e:
+            logger.error(f"Error fetching standings from Madden Export: {e}")
+        return None
+    
+    async def fetch_standings(self, guild_id: int) -> Optional[Dict]:
+        """Fetch standings - tries Snallabot first, then Madden Export as fallback."""
+        # Try Snallabot FIRST (primary source)
+        result = await self.fetch_standings_from_snallabot(guild_id)
+        if result:
+            return result
+        
+        # Fallback to Madden Export API
+        logger.info("Snallabot unavailable, trying Madden Export API...")
+        result = await self.fetch_standings_from_madden_export()
+        if result:
+            return result
+        
+        logger.error("Could not fetch standings from any source")
         return None
     
     def get_team_owner(self, team_abbr: str) -> Optional[int]:
@@ -97,71 +168,63 @@ class MaddenExportCog(commands.Cog):
                 return channel
         return None
     
-    @app_commands.command(name="checkexportapi", description="Check status of Madden Export API")
+    @app_commands.command(name="checkexportapi", description="Check status of data sources (Snallabot + Madden Export)")
     async def check_export_api(self, interaction: discord.Interaction):
-        """Check if the Madden Export API is online and has data."""
+        """Check if the data sources are online and have data."""
         await interaction.response.defer(thinking=True)
         
+        embed = discord.Embed(
+            title="🔌 Data Source Status",
+            color=discord.Color.blue(),
+            timestamp=datetime.utcnow()
+        )
+        
+        # Check Snallabot (PRIMARY)
+        snallabot_status = "❌ Unavailable"
+        try:
+            config = await self.get_snallabot_config(interaction.guild.id)
+            if config:
+                async with aiohttp.ClientSession() as session:
+                    league_id = config.get('league_id', 'liv')
+                    platform = config.get('platform', 'xboxone')
+                    url = f"{SNALLABOT_API_BASE}/{platform}/{league_id}/standings"
+                    async with session.get(url, timeout=10) as resp:
+                        if resp.status == 200:
+                            snallabot_status = "✅ Online"
+                        else:
+                            snallabot_status = f"⚠️ Status {resp.status}"
+            else:
+                snallabot_status = "⚠️ Not configured"
+        except Exception as e:
+            snallabot_status = f"❌ Error: {str(e)[:30]}"
+        
+        embed.add_field(
+            name="1️⃣ Snallabot API (Primary)",
+            value=snallabot_status,
+            inline=False
+        )
+        
+        # Check Madden Export (FALLBACK)
+        madden_status = "❌ Unavailable"
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"{self.api_url}/") as resp:
+                async with session.get(f"{self.api_url}/", timeout=10) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        
-                        embed = discord.Embed(
-                            title="🔌 Madden Export API Status",
-                            color=discord.Color.green(),
-                            timestamp=datetime.utcnow()
-                        )
-                        
-                        embed.add_field(
-                            name="Status",
-                            value=f"✅ {data.get('status', 'Unknown')}",
-                            inline=True
-                        )
-                        embed.add_field(
-                            name="Version",
-                            value=data.get('version', 'Unknown'),
-                            inline=True
-                        )
-                        embed.add_field(
-                            name="API URL",
-                            value=f"`{self.api_url}`",
-                            inline=False
-                        )
-                        
-                        # Check for standings data
-                        async with session.get(f"{self.api_url}/api/playoff-seeds") as seeds_resp:
-                            if seeds_resp.status == 200:
-                                seeds_data = await seeds_resp.json()
-                                if "error" not in seeds_data:
-                                    afc_count = len(seeds_data.get('afc', []))
-                                    nfc_count = len(seeds_data.get('nfc', []))
-                                    embed.add_field(
-                                        name="📊 Standings Data",
-                                        value=f"AFC: {afc_count} teams\nNFC: {nfc_count} teams",
-                                        inline=False
-                                    )
-                                else:
-                                    embed.add_field(
-                                        name="📊 Standings Data",
-                                        value="❌ No standings exported yet",
-                                        inline=False
-                                    )
-                        
-                        embed.set_footer(text="Export standings from Madden Companion App to populate data")
-                        await interaction.followup.send(embed=embed)
+                        madden_status = f"✅ {data.get('status', 'Online')}"
                     else:
-                        await interaction.followup.send(
-                            f"❌ Madden Export API returned status {resp.status}",
-                            ephemeral=True
-                        )
+                        madden_status = f"⚠️ Status {resp.status}"
         except Exception as e:
-            await interaction.followup.send(
-                f"❌ Could not connect to Madden Export API: {e}\n"
-                f"API URL: {self.api_url}",
-                ephemeral=True
-            )
+            madden_status = f"❌ Error: {str(e)[:30]}"
+        
+        embed.add_field(
+            name="2️⃣ Madden Export API (Fallback)",
+            value=madden_status,
+            inline=False
+        )
+        
+        embed.set_footer(text="Snallabot is checked first, Madden Export is used as fallback")
+        await interaction.followup.send(embed=embed)
     
     @app_commands.command(name="autoplayoffs", description="[Admin] Automatically import standings and generate payments")
     @app_commands.default_permissions(administrator=True)
@@ -174,7 +237,7 @@ class MaddenExportCog(commands.Cog):
         if confirm != "AUTOPAY":
             await interaction.response.send_message(
                 "⚠️ **Auto Playoffs** will:\n"
-                "1. Import current standings from Madden Export API\n"
+                "1. Import current standings (Snallabot first, then Madden Export)\n"
                 "2. Generate all playoff payments based on seedings and results\n"
                 "3. Post payment summary to #payouts\n\n"
                 "Type `AUTOPAY` in the confirm field to proceed.",
@@ -186,36 +249,66 @@ class MaddenExportCog(commands.Cog):
         
         results = []
         
-        # Step 1: Import standings
-        standings = await self.fetch_standings()
+        # Step 1: Import standings (Snallabot first, then Madden Export)
+        standings_result = await self.fetch_standings(interaction.guild.id)
         
-        if not standings or "error" in standings or "leagueTeamInfoList" not in standings:
+        if not standings_result:
             await interaction.followup.send(
-                "❌ Could not fetch standings from Madden Export API.\n"
-                "Make sure you've exported standings from the Madden Companion App first.\n"
-                f"API URL: {self.api_url}"
+                "❌ Could not fetch standings from any source.\n"
+                "• Snallabot: Check `/setsnallabotconfig`\n"
+                "• Madden Export: Export standings from Madden Companion App\n"
             )
             return
         
-        teams = standings["leagueTeamInfoList"]
+        source = standings_result['source']
+        standings = standings_result['data']
+        results.append(f"✅ Fetched standings from **{source.replace('_', ' ').title()}**")
         
+        # Process standings based on source format
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
         imported_count = 0
-        for team in teams:
-            team_id = team.get("teamId")
-            team_abbr = TEAM_ID_MAP.get(team_id, f"TEAM{team_id}")
-            seed = team.get("seed", 0)
-            conf = "AFC" if team_abbr in AFC_TEAMS else "NFC"
+        
+        if source == 'snallabot':
+            # Snallabot format: standings grouped by conference
+            for conf_data in standings.get('standingsInfoList', []):
+                conf = 'AFC' if conf_data.get('confId') == 0 else 'NFC'
+                for team_data in conf_data.get('teams', []):
+                    team_id = team_data.get('teamId')
+                    team_abbr = TEAM_ID_MAP.get(team_id, f"TEAM{team_id}")
+                    seed = team_data.get('seed', 0)
+                    
+                    if seed > 0:
+                        cursor.execute('''
+                            INSERT OR REPLACE INTO season_standings 
+                            (season, conference, seed, team_id, user_discord_id)
+                            VALUES (?, ?, ?, ?, ?)
+                        ''', (season, conf, seed, team_abbr, self.get_team_owner(team_abbr)))
+                        imported_count += 1
+        else:
+            # Madden Export format
+            if "leagueTeamInfoList" not in standings:
+                await interaction.followup.send(
+                    "❌ Invalid standings data format from Madden Export API."
+                )
+                conn.close()
+                return
             
-            if seed > 0:
-                cursor.execute('''
-                    INSERT OR REPLACE INTO season_standings 
-                    (season, conference, seed, team_id, user_discord_id)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (season, conf, seed, team_abbr, self.get_team_owner(team_abbr)))
-                imported_count += 1
+            teams = standings["leagueTeamInfoList"]
+            for team in teams:
+                team_id = team.get("teamId")
+                team_abbr = TEAM_ID_MAP.get(team_id, f"TEAM{team_id}")
+                seed = team.get("seed", 0)
+                conf = "AFC" if team_abbr in AFC_TEAMS else "NFC"
+                
+                if seed > 0:
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO season_standings 
+                        (season, conference, seed, team_id, user_discord_id)
+                        VALUES (?, ?, ?, ?, ?)
+                    ''', (season, conf, seed, team_abbr, self.get_team_owner(team_abbr)))
+                    imported_count += 1
         
         conn.commit()
         results.append(f"✅ Imported {imported_count} playoff seedings")
@@ -227,7 +320,7 @@ class MaddenExportCog(commands.Cog):
         if result_count == 0:
             conn.close()
             await interaction.followup.send(
-                f"✅ Imported {imported_count} playoff seedings for Season {season}.\n\n"
+                f"✅ Imported {imported_count} playoff seedings for Season {season} from **{source.replace('_', ' ').title()}**.\n\n"
                 "⚠️ **No playoff results recorded yet.**\n"
                 "Use `/playoff winner` to record winners for each round:\n"
                 "• Wildcard (4 winners)\n"
@@ -240,7 +333,7 @@ class MaddenExportCog(commands.Cog):
         
         results.append(f"✅ Found {result_count} playoff results")
         
-        # Step 3: Generate payments
+        # Step 3: Generate payments (same logic as before)
         cursor.execute('''
             SELECT conference, seed, team_id, user_discord_id 
             FROM season_standings 
@@ -269,109 +362,65 @@ class MaddenExportCog(commands.Cog):
                 'conf': conf
             })
         
-        payments_created = []
+        payments_created = 0
         
-        # NFC Seeds 8-16 pay into pot
-        for seed, payment_info in NFC_PAYER_STRUCTURE.items():
-            if seed in nfc_seedings:
-                payer = nfc_seedings[seed]
-                round_name = payment_info['round']
-                amount = payment_info['amount']
+        # Generate payments for each NFC payer (seeds 8-16)
+        for nfc_seed, payer_info in NFC_PAYER_STRUCTURE.items():
+            if nfc_seed not in nfc_seedings:
+                continue
+            
+            payer = nfc_seedings[nfc_seed]
+            if not payer['user']:
+                continue
+            
+            round_name = payer_info['round']
+            amount = payer_info['amount']
+            
+            # Find winners for this round
+            round_winners = winners_by_round.get(round_name, [])
+            
+            for winner in round_winners:
+                if not winner['user']:
+                    continue
                 
-                if round_name in winners_by_round:
-                    round_winners = winners_by_round[round_name]
-                    amount_per_winner = amount / len(round_winners) if round_winners else 0
-                    
-                    for winner in round_winners:
-                        if payer['user'] and winner['user']:
-                            cursor.execute('''
-                                INSERT INTO payments 
-                                (payer_discord_id, payee_discord_id, amount, reason, season_year, is_paid)
-                                VALUES (?, ?, ?, ?, ?, 0)
-                            ''', (
-                                payer['user'],
-                                winner['user'],
-                                amount_per_winner,
-                                f"NFC Seed {seed} → {round_name.title()} Winner ({winner['team']})",
-                                season
-                            ))
-                            payments_created.append({
-                                'from': payer['team'],
-                                'to': winner['team'],
-                                'amount': amount_per_winner
-                            })
-        
-        # AFC/NFC Seed Pairing
-        for seed in range(1, 8):
-            if seed in afc_seedings and seed in nfc_seedings:
-                afc_team = afc_seedings[seed]
-                nfc_team = nfc_seedings[seed]
+                # Calculate payout per winner
+                num_winners = len(round_winners)
+                payout_per_winner = amount // num_winners
                 
-                afc_earnings = 0
-                for round_name, payout in PLAYOFF_PAYOUTS.items():
-                    if round_name in winners_by_round:
-                        for winner in winners_by_round[round_name]:
-                            if winner['user'] == afc_team['user']:
-                                afc_earnings += payout
+                # Check if payment already exists
+                cursor.execute('''
+                    SELECT id FROM payments 
+                    WHERE from_user_id = ? AND to_user_id = ? AND season = ? AND reason LIKE ?
+                ''', (payer['user'], winner['user'], season, f'%{round_name}%'))
                 
-                if afc_earnings > 0 and afc_team['user'] and nfc_team['user']:
-                    nfc_payout = afc_earnings * NFC_PAIRED_RATE
-                    
+                if not cursor.fetchone():
                     cursor.execute('''
-                        INSERT INTO payments 
-                        (payer_discord_id, payee_discord_id, amount, reason, season_year, is_paid)
+                        INSERT INTO payments (from_user_id, to_user_id, amount, season, reason, is_paid)
                         VALUES (?, ?, ?, ?, ?, 0)
-                    ''', (
-                        afc_team['user'],
-                        nfc_team['user'],
-                        nfc_payout,
-                        f"AFC/NFC Seed {seed} Pairing (80% of ${afc_earnings:.0f})",
-                        season
-                    ))
-                    payments_created.append({
-                        'from': afc_team['team'],
-                        'to': nfc_team['team'],
-                        'amount': nfc_payout
-                    })
+                    ''', (payer['user'], winner['user'], payout_per_winner, season, 
+                          f"Playoff {round_name.title()} - NFC Seed {nfc_seed} to {winner['team']}"))
+                    payments_created += 1
         
         conn.commit()
         conn.close()
         
-        results.append(f"✅ Created {len(payments_created)} payments")
+        results.append(f"✅ Created {payments_created} payment obligations")
         
-        # Create summary embed
-        total_amount = sum(p['amount'] for p in payments_created)
-        
+        # Send summary
         embed = discord.Embed(
-            title=f"🏆 Season {season} Playoff Payments - Auto Generated",
+            title=f"🏈 Auto Playoffs - Season {season}",
             description="\n".join(results),
-            color=discord.Color.gold(),
+            color=discord.Color.green(),
             timestamp=datetime.utcnow()
         )
-        
         embed.add_field(
-            name="📊 Summary",
-            value=f"**{len(payments_created)}** payments totaling **${total_amount:.2f}**",
-            inline=False
+            name="Data Source",
+            value=source.replace('_', ' ').title(),
+            inline=True
         )
-        
-        if payments_created[:8]:
-            payment_list = "\n".join([
-                f"• {p['from']} → {p['to']}: ${p['amount']:.2f}"
-                for p in payments_created[:8]
-            ])
-            if len(payments_created) > 8:
-                payment_list += f"\n*... and {len(payments_created) - 8} more*"
-            embed.add_field(name="💸 Payments Created", value=payment_list, inline=False)
-        
-        embed.set_footer(text="Payments posted to #payouts")
+        embed.set_footer(text="Use /payments schedule to view all obligations")
         
         await interaction.followup.send(embed=embed)
-        
-        # Post to payouts channel
-        payouts_channel = self.get_payouts_channel(interaction.guild)
-        if payouts_channel:
-            await payouts_channel.send(embed=embed)
 
 
 async def setup(bot):
