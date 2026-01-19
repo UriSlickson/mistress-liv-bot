@@ -13,44 +13,9 @@ from discord import app_commands
 import sqlite3
 from typing import Optional
 import logging
+import asyncio
 
 logger = logging.getLogger('MistressLIV.Announcements')
-
-# Team abbreviations and full names for matching
-TEAM_IDENTIFIERS = {
-    'ARI': ['ARI', 'CARDINALS', 'ARIZONA'],
-    'ATL': ['ATL', 'FALCONS', 'ATLANTA'],
-    'BAL': ['BAL', 'RAVENS', 'BALTIMORE'],
-    'BUF': ['BUF', 'BILLS', 'BUFFALO'],
-    'CAR': ['CAR', 'PANTHERS', 'CAROLINA'],
-    'CHI': ['CHI', 'BEARS', 'CHICAGO'],
-    'CIN': ['CIN', 'BENGALS', 'CINCINNATI'],
-    'CLE': ['CLE', 'BROWNS', 'CLEVELAND'],
-    'DAL': ['DAL', 'COWBOYS', 'DALLAS'],
-    'DEN': ['DEN', 'BRONCOS', 'DENVER'],
-    'DET': ['DET', 'LIONS', 'DETROIT'],
-    'GB': ['GB', 'PACKERS', 'GREEN BAY', 'GREENBAY'],
-    'HOU': ['HOU', 'TEXANS', 'HOUSTON'],
-    'IND': ['IND', 'COLTS', 'INDIANAPOLIS'],
-    'JAX': ['JAX', 'JAGUARS', 'JACKSONVILLE'],
-    'KC': ['KC', 'CHIEFS', 'KANSAS CITY', 'KANSASCITY'],
-    'LAC': ['LAC', 'CHARGERS', 'LA CHARGERS'],
-    'LAR': ['LAR', 'RAMS', 'LA RAMS'],
-    'LV': ['LV', 'RAIDERS', 'LAS VEGAS', 'LASVEGAS'],
-    'MIA': ['MIA', 'DOLPHINS', 'MIAMI'],
-    'MIN': ['MIN', 'VIKINGS', 'MINNESOTA'],
-    'NE': ['NE', 'PATRIOTS', 'NEW ENGLAND', 'NEWENGLAND'],
-    'NO': ['NO', 'SAINTS', 'NEW ORLEANS', 'NEWORLEANS'],
-    'NYG': ['NYG', 'GIANTS', 'NY GIANTS'],
-    'NYJ': ['NYJ', 'JETS', 'NY JETS'],
-    'PHI': ['PHI', 'EAGLES', 'PHILADELPHIA'],
-    'PIT': ['PIT', 'STEELERS', 'PITTSBURGH'],
-    'SEA': ['SEA', 'SEAHAWKS', 'SEATTLE'],
-    'SF': ['SF', '49ERS', 'NINERS', 'SAN FRANCISCO', 'SANFRANCISCO'],
-    'TB': ['TB', 'BUCCANEERS', 'BUCS', 'TAMPA BAY', 'TAMPABAY'],
-    'TEN': ['TEN', 'TITANS', 'TENNESSEE'],
-    'WAS': ['WAS', 'COMMANDERS', 'WASHINGTON'],
-}
 
 
 class AnnouncementsCog(commands.Cog):
@@ -63,28 +28,21 @@ class AnnouncementsCog(commands.Cog):
     def get_db_connection(self):
         return sqlite3.connect(self.db_path)
     
-    def _is_team_role(self, role_name: str) -> bool:
-        """Check if a role name matches any team identifier."""
-        role_upper = role_name.upper()
-        for team, identifiers in TEAM_IDENTIFIERS.items():
-            for identifier in identifiers:
-                if identifier in role_upper or role_upper in identifier:
-                    return True
-        return False
-    
-    def _get_team_owners(self, guild: discord.Guild) -> list:
-        """Get all members with team roles."""
-        owners = []
-        for member in guild.members:
-            if member.bot:
-                continue
-            for role in member.roles:
-                if self._is_team_role(role.name):
-                    owners.append(member)
-                    break
-        
-        logger.info(f"Found {len(owners)} team owners in {guild.name}")
-        return owners
+    def get_registered_owners(self) -> list:
+        """Get all registered team owners from the database."""
+        try:
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT team_id, team_name, user_discord_id FROM teams WHERE user_discord_id IS NOT NULL"
+            )
+            results = cursor.fetchall()
+            conn.close()
+            logger.info(f"Found {len(results)} registered team owners in database")
+            return results
+        except Exception as e:
+            logger.error(f"Error getting registered owners: {e}")
+            return []
 
     # ==================== ANNOUNCE COMMAND GROUP ====================
     
@@ -126,27 +84,41 @@ class AnnouncementsCog(commands.Cog):
         else:
             logger.warning("Could not find #announcements channel")
         
-        # DM all league members
-        owners = self._get_team_owners(interaction.guild)
+        # DM all registered team owners from database
+        registered_owners = self.get_registered_owners()
         dm_count = 0
         dm_failed = 0
         failed_members = []
         
-        logger.info(f"Attempting to DM {len(owners)} team owners")
+        dm_embed = discord.Embed(
+            title="📢 Mistress LIV Announcement",
+            description=message,
+            color=discord.Color.blue()
+        )
+        dm_embed.set_footer(text=f"From: {interaction.guild.name}")
         
-        for owner in owners:
+        logger.info(f"Attempting to DM {len(registered_owners)} registered team owners")
+        
+        for team_id, team_name, discord_id in registered_owners:
             try:
-                await owner.send(embed=embed)
+                # fetch_user works without Server Members Intent
+                user = await self.bot.fetch_user(discord_id)
+                await user.send(embed=dm_embed)
                 dm_count += 1
-                logger.info(f"Successfully DMed {owner.display_name}")
+                logger.info(f"Successfully DMed {team_id} owner ({discord_id})")
+                await asyncio.sleep(0.3)  # Rate limiting
+            except discord.NotFound:
+                dm_failed += 1
+                failed_members.append(f"{team_id} (user not found)")
+                logger.warning(f"User not found for {team_id}: {discord_id}")
             except discord.Forbidden:
                 dm_failed += 1
-                failed_members.append(f"{owner.display_name} (DMs disabled)")
-                logger.warning(f"Cannot DM {owner.display_name} - DMs disabled")
+                failed_members.append(f"{team_id} (DMs disabled)")
+                logger.warning(f"Cannot DM {team_id} owner - DMs disabled")
             except Exception as e:
                 dm_failed += 1
-                failed_members.append(f"{owner.display_name} ({str(e)[:20]})")
-                logger.error(f"Failed to DM {owner.display_name}: {e}")
+                failed_members.append(f"{team_id} ({str(e)[:20]})")
+                logger.error(f"Failed to DM {team_id} owner: {e}")
         
         result = f"✅ Posted to: {', '.join(posted_to) if posted_to else 'No channels found'}"
         result += f"\n📬 DMed {dm_count} league members"
@@ -154,6 +126,9 @@ class AnnouncementsCog(commands.Cog):
             result += f" ({dm_failed} failed)"
             if len(failed_members) <= 5:
                 result += f"\nFailed: {', '.join(failed_members)}"
+        
+        if len(registered_owners) == 0:
+            result += "\n\n⚠️ **No team owners registered!** Have owners run `/register` to sign up."
         
         await interaction.followup.send(result, ephemeral=True)
     
@@ -199,37 +174,47 @@ class AnnouncementsCog(commands.Cog):
         """DM all league members."""
         await interaction.response.defer()
         
-        owners = self._get_team_owners(interaction.guild)
+        # Get registered team owners from database
+        registered_owners = self.get_registered_owners()
         
         embed = discord.Embed(
             title="📬 Message from Mistress LIV",
             description=message,
             color=discord.Color.blue()
         )
-        embed.set_footer(text=f"From {interaction.user.display_name}")
+        embed.set_footer(text=f"From: {interaction.guild.name}")
         
         success = 0
         failed = 0
         failed_members = []
         
-        logger.info(f"Attempting to DM {len(owners)} team owners")
+        logger.info(f"Attempting to DM {len(registered_owners)} registered team owners")
         
-        for owner in owners:
+        for team_id, team_name, discord_id in registered_owners:
             try:
-                await owner.send(embed=embed)
+                # fetch_user works without Server Members Intent
+                user = await self.bot.fetch_user(discord_id)
+                await user.send(embed=embed)
                 success += 1
+                await asyncio.sleep(0.3)  # Rate limiting
+            except discord.NotFound:
+                failed += 1
+                failed_members.append(f"{team_id} (user not found)")
             except discord.Forbidden:
                 failed += 1
-                failed_members.append(f"{owner.display_name} (DMs disabled)")
+                failed_members.append(f"{team_id} (DMs disabled)")
             except Exception as e:
                 failed += 1
-                failed_members.append(f"{owner.display_name}")
+                failed_members.append(f"{team_id}")
         
         result = f"✅ DMed {success} league members"
         if failed > 0:
             result += f" ({failed} failed)"
             if len(failed_members) <= 5:
                 result += f"\nFailed: {', '.join(failed_members)}"
+        
+        if len(registered_owners) == 0:
+            result += "\n\n⚠️ **No team owners registered!** Have owners run `/register` to sign up."
         
         await interaction.followup.send(result, ephemeral=True)
 
