@@ -121,13 +121,68 @@ class MyMaddenScraper:
         soup = BeautifulSoup(html_content, 'html.parser')
         
         # Find all game cards - they use custom <basic-panel> elements with 'game' class
-        game_divs = soup.find_all('basic-panel')
-        game_divs = [d for d in game_divs if d.get('class') and 'game' in d.get('class')]
+        game_panels = soup.find_all('basic-panel', class_='game')
         
-        for game_div in game_divs:
+        # If no panels found with class, try finding by structure
+        if not game_panels:
+            game_panels = soup.find_all('basic-panel')
+            game_panels = [p for p in game_panels if p.get('class') and 'game' in p.get('class', [])]
+        
+        logger.info(f"Found {len(game_panels)} game panels in HTML")
+        
+        for game_panel in game_panels:
             try:
-                text_content = game_div.get_text(separator='|', strip=True)
+                # Method 1: Parse using team-name and score classes (most reliable)
+                team_names = game_panel.find_all('td', class_='team-name')
+                scores = game_panel.find_all('td', class_='score')
+                
+                if len(team_names) >= 2 and len(scores) >= 2:
+                    # Extract team names from links
+                    away_team_elem = team_names[0].find('a')
+                    home_team_elem = team_names[1].find('a')
+                    
+                    if away_team_elem and home_team_elem:
+                        away_team_name = away_team_elem.get_text(strip=True)
+                        home_team_name = home_team_elem.get_text(strip=True)
+                        
+                        # Extract scores
+                        away_score_text = scores[0].get_text(strip=True)
+                        home_score_text = scores[1].get_text(strip=True)
+                        
+                        away_score = int(away_score_text) if away_score_text.isdigit() else None
+                        home_score = int(home_score_text) if home_score_text.isdigit() else None
+                        
+                        away_team = self._normalize_team(away_team_name)
+                        home_team = self._normalize_team(home_team_name)
+                        
+                        if away_team and home_team:
+                            completed = away_score is not None and home_score is not None
+                            winner = None
+                            
+                            if completed:
+                                if away_score > home_score:
+                                    winner = away_team
+                                elif home_score > away_score:
+                                    winner = home_team
+                            
+                            games.append({
+                                'away_team': away_team,
+                                'home_team': home_team,
+                                'away_score': away_score,
+                                'home_score': home_score,
+                                'winner': winner,
+                                'completed': completed
+                            })
+                            logger.info(f"Parsed game: {away_team} {away_score} @ {home_team} {home_score}, winner: {winner}")
+                            continue
+                
+                # Method 2: Fallback - parse text content
+                text_content = game_panel.get_text(separator='|', strip=True)
                 parts = [p.strip() for p in text_content.split('|') if p.strip()]
+                
+                # Skip GAMECENTER header
+                if parts and parts[0] == 'GAMECENTER':
+                    parts = parts[1:]
                 
                 if len(parts) < 4:
                     continue
@@ -140,31 +195,49 @@ class MyMaddenScraper:
                 idx = 0
                 
                 # Away team
-                if idx < len(parts) and not parts[idx].isdigit() and not re.match(r'\d+-\d+-\d+', parts[idx]):
-                    away_team_name = parts[idx]
+                while idx < len(parts):
+                    if not parts[idx].isdigit() and not re.match(r'\d+-\d+-\d+', parts[idx]):
+                        away_team_name = parts[idx]
+                        idx += 1
+                        break
                     idx += 1
                 
                 # Away score
-                if idx < len(parts) and parts[idx].isdigit():
-                    away_score = int(parts[idx])
+                while idx < len(parts):
+                    if parts[idx].isdigit():
+                        away_score = int(parts[idx])
+                        idx += 1
+                        break
                     idx += 1
                 
-                # Skip record
-                if idx < len(parts) and re.match(r'\d+-\d+-\d+', parts[idx]):
-                    idx += 1
-                
-                # Skip game day
-                if idx < len(parts) and parts[idx] in ['TNF', 'MNF', 'SNF', 'SUN', 'SAT']:
-                    idx += 1
+                # Skip record and other elements to find home team
+                while idx < len(parts):
+                    if re.match(r'\d+-\d+-\d+', parts[idx]):
+                        idx += 1
+                        continue
+                    if parts[idx] in ['TNF', 'MNF', 'SNF', 'SUN', 'SAT', 'FW:', 'None', 'Started']:
+                        idx += 1
+                        continue
+                    if parts[idx].isdigit() and int(parts[idx]) <= 20:  # Skip small numbers (likely times)
+                        idx += 1
+                        continue
+                    break
                 
                 # Home team
-                if idx < len(parts) and not parts[idx].isdigit() and not re.match(r'\d+-\d+-\d+', parts[idx]):
-                    home_team_name = parts[idx]
+                while idx < len(parts):
+                    if not parts[idx].isdigit() and not re.match(r'\d+-\d+-\d+', parts[idx]):
+                        if parts[idx] not in ['FW:', 'None', 'Started', 'Time', 'Times']:
+                            home_team_name = parts[idx]
+                            idx += 1
+                            break
                     idx += 1
                 
                 # Home score
-                if idx < len(parts) and parts[idx].isdigit():
-                    home_score = int(parts[idx])
+                while idx < len(parts):
+                    if parts[idx].isdigit():
+                        home_score = int(parts[idx])
+                        break
+                    idx += 1
                 
                 if not all([away_team_name, home_team_name]):
                     continue
@@ -192,11 +265,13 @@ class MyMaddenScraper:
                     'winner': winner,
                     'completed': completed
                 })
+                logger.info(f"Parsed game (fallback): {away_team} {away_score} @ {home_team} {home_score}")
                 
             except Exception as e:
-                logger.error(f"Error parsing game div: {e}")
+                logger.error(f"Error parsing game panel: {e}")
                 continue
         
+        logger.info(f"Successfully parsed {len(games)} games from HTML")
         return games
     
     async def get_games_for_week(self, year: int, season_type: str, week: int) -> List[Dict]:
