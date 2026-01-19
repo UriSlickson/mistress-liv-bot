@@ -50,6 +50,7 @@ class LeagueInfo(commands.Cog):
                 "• Cannot add a 71+ to psquad then back to roster to resign them\n"
                 "• All player edits must be streamed\n"
                 "• No editing Throwing Arms (Right or Left) or Throwing Style\n"
+                "• Cannot edit physicals or player ratings\n"
                 "• Created player name changes ok but must be real names not nicknames"
             ),
             inline=False
