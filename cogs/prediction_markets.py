@@ -6,8 +6,8 @@ Features:
 - Order book tracking with limit orders
 - Automated resolution via Snallabot data
 - Leaderboards and position tracking
-- 6% house fee on profits
-- $10 minimum trades in $10 increments only
+- P2P payments (no house fee)
+- $5 minimum trades in $5 increments only
 
 Commands:
 /market create - Create a new prediction market
@@ -36,8 +36,8 @@ logger = logging.getLogger('MistressLIV.PredictionMarkets')
 
 # Constants
 HOUSE_FEE_RATE = 0.0  # No house fee - all profits go to winners
-MIN_TRADE_AMOUNT = 10  # $10 minimum
-TRADE_INCREMENT = 10   # Must be in $10 increments
+MIN_TRADE_AMOUNT = 5   # $5 minimum
+TRADE_INCREMENT = 5    # Must be in $5 increments
 MAX_SHARES_PER_USER_PER_MARKET = 500  # Volume cap
 BOT_LIQUIDITY_SEED = 100  # Initial bot liquidity per side
 SNALLABOT_API_BASE = "https://snallabot.me"
