@@ -35,7 +35,7 @@ import aiohttp
 logger = logging.getLogger('MistressLIV.PredictionMarkets')
 
 # Constants
-HOUSE_FEE_RATE = 0.06  # 6% fee on profits
+HOUSE_FEE_RATE = 0.0  # No house fee - all profits go to winners
 MIN_TRADE_AMOUNT = 10  # $10 minimum
 TRADE_INCREMENT = 10   # Must be in $10 increments
 MAX_SHARES_PER_USER_PER_MARKET = 500  # Volume cap
@@ -48,12 +48,23 @@ MAX_PRICE = 95  # 95 cents maximum
 
 # NFC Requirement
 NFC_MIN_VOLUME_REQUIREMENT = 100  # $100 minimum for NFC members
+NFC_OWN_TEAM_PLAYOFF_BET = 50  # $50 must be on own team making playoffs
 NFC_DEADLINE_WEEK = 18  # Must be met by end of Week 18
+
+# NFC Teams mapping (abbreviation to full names)
 NFC_TEAMS = ['ARI', 'ATL', 'CAR', 'CHI', 'DAL', 'DET', 'GB', 'LAR', 
              'MIN', 'NO', 'NYG', 'PHI', 'SF', 'SEA', 'TB', 'WAS',
              'Cardinals', 'Falcons', 'Panthers', 'Bears', 'Cowboys', 'Lions',
              'Packers', 'Rams', 'Vikings', 'Saints', 'Giants', 'Eagles',
              '49ers', 'Seahawks', 'Buccaneers', 'Commanders']
+
+# Team abbreviation to market name mapping
+NFC_TEAM_MARKET_NAMES = {
+    'ARI': 'Cardinals', 'ATL': 'Falcons', 'CAR': 'Panthers', 'CHI': 'Bears',
+    'DAL': 'Cowboys', 'DET': 'Lions', 'GB': 'Packers', 'LAR': 'Rams',
+    'MIN': 'Vikings', 'NO': 'Saints', 'NYG': 'Giants', 'PHI': 'Eagles',
+    'SF': '49ers', 'SEA': 'Seahawks', 'TB': 'Buccaneers', 'WAS': 'Commanders'
+}
 
 
 class PredictionMarketsCog(commands.Cog):
@@ -160,17 +171,21 @@ class PredictionMarketsCog(commands.Cog):
             )
         ''')
         
-        # House pot table
+        # P2P Payments table (tracks who owes whom from prediction markets)
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS prediction_house_pot (
-                id INTEGER PRIMARY KEY DEFAULT 1,
-                total_fees INTEGER DEFAULT 0,
-                last_updated TEXT
+            CREATE TABLE IF NOT EXISTS prediction_payments (
+                payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                market_id TEXT NOT NULL,
+                guild_id INTEGER NOT NULL,
+                winner_id INTEGER NOT NULL,
+                loser_id INTEGER NOT NULL,
+                amount INTEGER NOT NULL,
+                is_paid INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                paid_at TEXT,
+                FOREIGN KEY (market_id) REFERENCES prediction_markets(market_id)
             )
         ''')
-        
-        # Initialize house pot if not exists
-        cursor.execute('INSERT OR IGNORE INTO prediction_house_pot (id, total_fees) VALUES (1, 0)')
         
         conn.commit()
         conn.close()
@@ -662,7 +677,7 @@ class PredictionMarketsCog(commands.Cog):
             inline=False
         )
         
-        embed.set_footer(text=f"Created by {interaction.user.display_name} • 6% fee on profits")
+        embed.set_footer(text=f"Created by {interaction.user.display_name}")
         
         await interaction.followup.send(embed=embed)
         
@@ -976,7 +991,7 @@ class PredictionMarketsCog(commands.Cog):
                 )
                 await channel.send(embed=alert_embed)
         
-        embed.set_footer(text=f"6% fee on profits when market resolves")
+        embed.set_footer(text=f"Trade executed successfully")
         
         await interaction.followup.send(embed=embed)
     
@@ -1169,7 +1184,7 @@ class PredictionMarketsCog(commands.Cog):
             
             embed.description = leaderboard_str
         
-        embed.set_footer(text="Rankings based on settled market profits (6% fee deducted)")
+        embed.set_footer(text="Rankings based on settled market profits")
         
         await interaction.followup.send(embed=embed)
     
@@ -1186,7 +1201,7 @@ class PredictionMarketsCog(commands.Cog):
         ]
     )
     async def resolve_market(self, interaction: discord.Interaction, market_id: str, result: str):
-        """Resolve a market and settle all positions."""
+        """Resolve a market and settle all positions with P2P payments."""
         await interaction.response.defer()
         
         market_id = market_id.upper()
@@ -1214,41 +1229,30 @@ class PredictionMarketsCog(commands.Cog):
         
         question, _, channel_id = market
         
-        # Get all positions
+        # Get all positions (excluding bot)
         cursor.execute('''
             SELECT user_id, yes_shares, no_shares, total_invested
             FROM prediction_positions
-            WHERE market_id = ?
+            WHERE market_id = ? AND user_id != 0
         ''', (market_id,))
         
         positions = cursor.fetchall()
         
-        # Calculate payouts
-        payouts = []
-        total_house_fee = 0
+        # Separate winners and losers
+        winners = []
+        losers = []
         
         for user_id, yes_shares, no_shares, invested in positions:
-            if user_id == 0:  # Skip bot
-                continue
-            
             # Winning shares pay out $1 each (100 cents)
             if result == 'Yes':
-                payout = yes_shares * 100  # Yes shares win
+                winning_shares = yes_shares
             else:
-                payout = no_shares * 100  # No shares win
+                winning_shares = no_shares
             
+            payout = winning_shares * 100
             profit = payout - invested
             
-            # Apply house fee on profits only
-            if profit > 0:
-                fee = int(profit * HOUSE_FEE_RATE)
-                total_house_fee += fee
-                net_profit = profit - fee
-            else:
-                fee = 0
-                net_profit = profit
-            
-            # Update user's lifetime stats
+            # Update user's lifetime stats (no house fee)
             cursor.execute('''
                 INSERT INTO prediction_profits (user_id, total_profit, total_volume, markets_won, markets_lost, markets_participated)
                 VALUES (?, ?, ?, ?, ?, 1)
@@ -1258,25 +1262,41 @@ class PredictionMarketsCog(commands.Cog):
                     markets_won = markets_won + ?,
                     markets_lost = markets_lost + ?,
                     markets_participated = markets_participated + 1
-            ''', (user_id, net_profit, invested, 1 if profit > 0 else 0, 1 if profit < 0 else 0,
-                  net_profit, invested, 1 if profit > 0 else 0, 1 if profit < 0 else 0))
+            ''', (user_id, profit, invested, 1 if profit > 0 else 0, 1 if profit < 0 else 0,
+                  profit, invested, 1 if profit > 0 else 0, 1 if profit < 0 else 0))
             
-            if profit != 0:
-                payouts.append({
-                    'user_id': user_id,
-                    'invested': invested,
-                    'payout': payout,
-                    'profit': profit,
-                    'fee': fee,
-                    'net_profit': net_profit
-                })
+            if profit > 0:
+                winners.append({'user_id': user_id, 'profit': profit, 'invested': invested})
+            elif profit < 0:
+                losers.append({'user_id': user_id, 'loss': abs(profit), 'invested': invested})
         
-        # Update house pot
-        cursor.execute('''
-            UPDATE prediction_house_pot 
-            SET total_fees = total_fees + ?, last_updated = ?
-            WHERE id = 1
-        ''', (total_house_fee, datetime.now().isoformat()))
+        # Create P2P payment obligations - match losers to winners proportionally
+        payments_created = []
+        total_winnings = sum(w['profit'] for w in winners)
+        
+        if winners and losers and total_winnings > 0:
+            for loser in losers:
+                for winner in winners:
+                    # Calculate proportional payment based on winner's share of total winnings
+                    winner_share = winner['profit'] / total_winnings
+                    payment_amount = int(loser['loss'] * winner_share)
+                    
+                    if payment_amount >= 100:  # At least $1 (100 cents)
+                        # Convert cents to dollars for storage
+                        payment_dollars = payment_amount // 100
+                        
+                        cursor.execute('''
+                            INSERT INTO prediction_payments 
+                            (market_id, guild_id, winner_id, loser_id, amount, is_paid, created_at)
+                            VALUES (?, ?, ?, ?, ?, 0, ?)
+                        ''', (market_id, interaction.guild.id, winner['user_id'], loser['user_id'], 
+                              payment_dollars, datetime.now().isoformat()))
+                        
+                        payments_created.append({
+                            'winner_id': winner['user_id'],
+                            'loser_id': loser['user_id'],
+                            'amount': payment_dollars
+                        })
         
         # Mark market as resolved
         cursor.execute('''
@@ -1296,29 +1316,41 @@ class PredictionMarketsCog(commands.Cog):
             timestamp=datetime.now()
         )
         
-        # Show top winners/losers
-        winners = sorted([p for p in payouts if p['net_profit'] > 0], key=lambda x: x['net_profit'], reverse=True)[:5]
-        losers = sorted([p for p in payouts if p['net_profit'] < 0], key=lambda x: x['net_profit'])[:5]
-        
+        # Show winners
         if winners:
             winners_str = ""
-            for p in winners:
-                member = interaction.guild.get_member(p['user_id'])
-                name = member.display_name if member else f"User {p['user_id']}"
-                winners_str += f"🟢 **{name}**: +${p['net_profit']:,} (fee: ${p['fee']})\n"
+            for w in sorted(winners, key=lambda x: x['profit'], reverse=True)[:5]:
+                member = interaction.guild.get_member(w['user_id'])
+                name = member.display_name if member else f"User {w['user_id']}"
+                winners_str += f"🟢 **{name}**: +${w['profit'] // 100:,}\n"
             embed.add_field(name="🏆 Winners", value=winners_str, inline=True)
         
+        # Show losers
         if losers:
             losers_str = ""
-            for p in losers:
-                member = interaction.guild.get_member(p['user_id'])
-                name = member.display_name if member else f"User {p['user_id']}"
-                losers_str += f"🔴 **{name}**: ${p['net_profit']:,}\n"
+            for l in sorted(losers, key=lambda x: x['loss'], reverse=True)[:5]:
+                member = interaction.guild.get_member(l['user_id'])
+                name = member.display_name if member else f"User {l['user_id']}"
+                losers_str += f"🔴 **{name}**: -${l['loss'] // 100:,}\n"
             embed.add_field(name="📉 Losers", value=losers_str, inline=True)
         
+        # Show payment obligations
+        if payments_created:
+            payments_str = f"**{len(payments_created)} payment(s) created**\n\n"
+            for p in payments_created[:5]:
+                winner = interaction.guild.get_member(p['winner_id'])
+                loser = interaction.guild.get_member(p['loser_id'])
+                winner_name = winner.display_name if winner else f"User {p['winner_id']}"
+                loser_name = loser.display_name if loser else f"User {p['loser_id']}"
+                payments_str += f"• {loser_name} owes {winner_name} **${p['amount']}**\n"
+            if len(payments_created) > 5:
+                payments_str += f"... and {len(payments_created) - 5} more"
+            embed.add_field(name="💸 Payment Obligations", value=payments_str, inline=False)
+        
         embed.add_field(
-            name="🏦 House Fee Collected",
-            value=f"${total_house_fee:,}",
+            name="💰 How to Pay",
+            value="Losers: Pay winners directly, then use `/predictionpaid` to confirm.\n"
+                  "Winners: Use `/predictionunpaid` to see who owes you.",
             inline=False
         )
         
@@ -1331,6 +1363,31 @@ class PredictionMarketsCog(commands.Cog):
             channel = interaction.guild.get_channel(channel_id)
             if channel:
                 await channel.send(embed=embed)
+        
+        # DM losers about their payment obligations
+        for p in payments_created:
+            loser = interaction.guild.get_member(p['loser_id'])
+            winner = interaction.guild.get_member(p['winner_id'])
+            if loser:
+                try:
+                    winner_name = winner.display_name if winner else f"User {p['winner_id']}"
+                    dm_embed = discord.Embed(
+                        title="💸 Prediction Market Payment Due",
+                        description=f"Market **{market_id}** has been resolved.\n\n"
+                                   f"**{question}**\n"
+                                   f"Result: **{result}**\n\n"
+                                   f"You owe **{winner_name}** **${p['amount']}**",
+                        color=discord.Color.orange()
+                    )
+                    dm_embed.add_field(
+                        name="How to Pay",
+                        value=f"1. Pay {winner_name} directly (Venmo, PayPal, etc.)\n"
+                              f"2. Use `/predictionpaid {market_id}` to confirm payment",
+                        inline=False
+                    )
+                    await loser.send(embed=dm_embed)
+                except discord.Forbidden:
+                    pass  # Can't DM this user
     
     @tasks.loop(hours=1)
     async def update_market_odds(self):
@@ -1401,6 +1458,50 @@ class PredictionMarketsCog(commands.Cog):
         
         return volume // 100  # Convert cents to dollars
     
+    def _get_member_nfc_team(self, member: discord.Member) -> Optional[str]:
+        """Get the NFC team abbreviation for a member based on their role."""
+        for role in member.roles:
+            role_name = role.name.upper()
+            # Check against abbreviations
+            for abbr in NFC_TEAM_MARKET_NAMES.keys():
+                if abbr.upper() == role_name or abbr.upper() in role_name:
+                    return abbr
+            # Check against full names
+            for abbr, name in NFC_TEAM_MARKET_NAMES.items():
+                if name.upper() in role_name or role_name in name.upper():
+                    return abbr
+        return None
+    
+    def _get_user_own_team_playoff_bet(self, user_id: int, guild_id: int, team_abbr: str) -> int:
+        """Get how much a user has bet on their own team making playoffs."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        team_name = NFC_TEAM_MARKET_NAMES.get(team_abbr, team_abbr)
+        
+        # Find playoff market for this team
+        cursor.execute('''
+            SELECT market_id FROM prediction_markets
+            WHERE guild_id = ? AND status = 'active'
+            AND (LOWER(question) LIKE ? OR LOWER(question) LIKE ?)
+        ''', (guild_id, f'%{team_name.lower()}%playoff%', f'%{team_abbr.lower()}%playoff%'))
+        
+        markets = cursor.fetchall()
+        
+        total_bet = 0
+        for (market_id,) in markets:
+            # Get user's Yes position (betting team WILL make playoffs)
+            cursor.execute('''
+                SELECT COALESCE(yes_shares, 0) FROM prediction_positions
+                WHERE market_id = ? AND user_id = ?
+            ''', (market_id, user_id))
+            row = cursor.fetchone()
+            if row:
+                total_bet += row[0]  # Yes shares = dollars bet on team making playoffs
+        
+        conn.close()
+        return total_bet
+    
     def _get_nfc_members_status(self, guild: discord.Guild) -> List[Dict]:
         """Get all NFC members and their prediction market status."""
         nfc_status = []
@@ -1413,12 +1514,25 @@ class PredictionMarketsCog(commands.Cog):
                 volume = self._get_user_prediction_volume(member.id, guild.id)
                 remaining = max(0, NFC_MIN_VOLUME_REQUIREMENT - volume)
                 
+                # Get own-team playoff bet status
+                team_abbr = self._get_member_nfc_team(member)
+                own_team_bet = 0
+                own_team_remaining = NFC_OWN_TEAM_PLAYOFF_BET
+                if team_abbr:
+                    own_team_bet = self._get_user_own_team_playoff_bet(member.id, guild.id, team_abbr)
+                    own_team_remaining = max(0, NFC_OWN_TEAM_PLAYOFF_BET - own_team_bet)
+                
                 nfc_status.append({
                     'user_id': member.id,
                     'name': member.display_name,
+                    'team': team_abbr,
                     'volume': volume,
                     'remaining': remaining,
-                    'met_requirement': volume >= NFC_MIN_VOLUME_REQUIREMENT
+                    'own_team_bet': own_team_bet,
+                    'own_team_remaining': own_team_remaining,
+                    'met_volume_requirement': volume >= NFC_MIN_VOLUME_REQUIREMENT,
+                    'met_own_team_requirement': own_team_bet >= NFC_OWN_TEAM_PLAYOFF_BET,
+                    'met_requirement': volume >= NFC_MIN_VOLUME_REQUIREMENT and own_team_bet >= NFC_OWN_TEAM_PLAYOFF_BET
                 })
         
         return nfc_status
@@ -1503,55 +1617,93 @@ class PredictionMarketsCog(commands.Cog):
             
             embed = discord.Embed(
                 title=f"{urgency} NFC Prediction Market Requirement Alert",
-                description=f"**NFC members must place at least ${NFC_MIN_VOLUME_REQUIREMENT} in prediction markets by end of Week {NFC_DEADLINE_WEEK}!**\n\n"
-                           f"Current Week: **{current_week}**\n"
-                           f"Weeks Remaining: **{weeks_remaining}**",
+                description=f"**NFC Requirements by Week {NFC_DEADLINE_WEEK}:**\n"
+                           f"• ${NFC_MIN_VOLUME_REQUIREMENT} total in prediction markets\n"
+                           f"• ${NFC_OWN_TEAM_PLAYOFF_BET} on YOUR team making playoffs\n\n"
+                           f"Current Week: **{current_week}** | Weeks Remaining: **{weeks_remaining}**",
                 color=color,
                 timestamp=datetime.now()
             )
             
-            # List non-compliant members
-            non_compliant_str = ""
-            for m in sorted(non_compliant, key=lambda x: x['remaining'], reverse=True):
-                non_compliant_str += f"• **{m['name']}**: ${m['volume']} traded (need ${m['remaining']} more)\n"
+            # Separate by type of non-compliance
+            volume_non_compliant = [m for m in non_compliant if not m.get('met_volume_requirement', False)]
+            own_team_non_compliant = [m for m in non_compliant if not m.get('met_own_team_requirement', False)]
             
-            embed.add_field(
-                name=f"📋 NFC Members Below ${NFC_MIN_VOLUME_REQUIREMENT} ({len(non_compliant)})",
-                value=non_compliant_str[:1024] if non_compliant_str else "All NFC members have met the requirement! 🎉",
-                inline=False
-            )
+            # List members below volume requirement
+            if volume_non_compliant:
+                volume_str = ""
+                for m in sorted(volume_non_compliant, key=lambda x: x['remaining'], reverse=True)[:10]:
+                    volume_str += f"• **{m['name']}**: ${m['volume']}/${NFC_MIN_VOLUME_REQUIREMENT}\n"
+                embed.add_field(
+                    name=f"💰 Below ${NFC_MIN_VOLUME_REQUIREMENT} Volume ({len(volume_non_compliant)})",
+                    value=volume_str[:1024],
+                    inline=True
+                )
+            
+            # List members who haven't bet on own team
+            if own_team_non_compliant:
+                own_team_str = ""
+                for m in sorted(own_team_non_compliant, key=lambda x: x.get('own_team_remaining', 50), reverse=True)[:10]:
+                    team = m.get('team', '?')
+                    bet = m.get('own_team_bet', 0)
+                    own_team_str += f"• **{m['name']}** ({team}): ${bet}/${NFC_OWN_TEAM_PLAYOFF_BET}\n"
+                embed.add_field(
+                    name=f"🏈 Own Team Playoff Bet ({len(own_team_non_compliant)})",
+                    value=own_team_str[:1024],
+                    inline=True
+                )
             
             embed.add_field(
                 name="💡 How to Participate",
-                value="1. View markets: `/market view`\n"
-                      "2. Place a trade: `/trade [marketID] Yes buy 10 50`\n"
+                value="1. View playoff markets: `/market view`\n"
+                      "2. Bet on your team: `/trade [marketID] Yes buy 50 [odds]`\n"
                       "3. Check your status: `/nfcstatus`",
                 inline=False
             )
             
-            embed.set_footer(text="Requirement: $100 minimum in prediction markets by Week 18")
+            embed.set_footer(text=f"Requirements: ${NFC_MIN_VOLUME_REQUIREMENT} total + ${NFC_OWN_TEAM_PLAYOFF_BET} on own team by Week {NFC_DEADLINE_WEEK}")
             
             await channel.send(embed=embed)
             
             # DM members who are very behind (less than 50% and within 4 weeks)
             if weeks_remaining <= 4:
                 for m in non_compliant:
-                    if m['volume'] < NFC_MIN_VOLUME_REQUIREMENT / 2:
+                    # DM if below 50% on either requirement
+                    needs_dm = (m['volume'] < NFC_MIN_VOLUME_REQUIREMENT / 2 or 
+                               m.get('own_team_bet', 0) < NFC_OWN_TEAM_PLAYOFF_BET / 2)
+                    if needs_dm:
                         member = guild.get_member(m['user_id'])
                         if member:
                             try:
+                                team = m.get('team', 'your team')
+                                team_name = NFC_TEAM_MARKET_NAMES.get(team, team)
+                                own_team_bet = m.get('own_team_bet', 0)
+                                own_team_remaining = m.get('own_team_remaining', NFC_OWN_TEAM_PLAYOFF_BET)
+                                
                                 dm_embed = discord.Embed(
                                     title=f"{urgency} Prediction Market Requirement Reminder",
                                     description=f"Hi {member.display_name}!\n\n"
-                                               f"As an NFC team owner, you need to place at least **${NFC_MIN_VOLUME_REQUIREMENT}** in prediction markets by **Week {NFC_DEADLINE_WEEK}**.\n\n"
-                                               f"**Your current volume:** ${m['volume']}\n"
-                                               f"**Still needed:** ${m['remaining']}\n"
+                                               f"As an NFC team owner ({team_name}), you have **two requirements** by **Week {NFC_DEADLINE_WEEK}**:\n\n"
+                                               f"**1️⃣ Total Volume:** ${m['volume']} / ${NFC_MIN_VOLUME_REQUIREMENT}\n"
+                                               f"**2️⃣ Own Team Playoff Bet:** ${own_team_bet} / ${NFC_OWN_TEAM_PLAYOFF_BET}\n\n"
                                                f"**Weeks remaining:** {weeks_remaining}",
                                     color=color
                                 )
+                                
+                                # Add specific guidance
+                                if own_team_remaining > 0:
+                                    dm_embed.add_field(
+                                        name=f"🏈 Bet on {team_name} Playoffs",
+                                        value=f"You need to bet **${own_team_remaining}** more on {team_name} making the playoffs!\n"
+                                              f"Find the '{team_name} Playoffs' market and buy Yes shares.",
+                                        inline=False
+                                    )
+                                
                                 dm_embed.add_field(
                                     name="Quick Start",
-                                    value="Use `/market view` to see available markets, then `/trade` to participate!",
+                                    value="1. `/market view` - See all markets\n"
+                                          "2. `/trade [marketID] Yes buy 50 [price]` - Place bet\n"
+                                          "3. `/nfcstatus` - Check your progress",
                                     inline=False
                                 )
                                 await member.send(embed=dm_embed)
@@ -1580,41 +1732,264 @@ class PredictionMarketsCog(commands.Cog):
         # Separate compliant and non-compliant
         compliant = [m for m in nfc_status if m['met_requirement']]
         non_compliant = sorted([m for m in nfc_status if not m['met_requirement']], 
-                               key=lambda x: x['remaining'], reverse=True)
+                               key=lambda x: x['remaining'] + x.get('own_team_remaining', 0), reverse=True)
         
         embed = discord.Embed(
             title="📊 NFC Prediction Market Requirement Status",
-            description=f"**Requirement:** ${NFC_MIN_VOLUME_REQUIREMENT} minimum by Week {NFC_DEADLINE_WEEK}\n"
+            description=f"**Requirements by Week {NFC_DEADLINE_WEEK}:**\n"
+                       f"• ${NFC_MIN_VOLUME_REQUIREMENT} total volume\n"
+                       f"• ${NFC_OWN_TEAM_PLAYOFF_BET} on your team making playoffs\n\n"
                        f"**Current Week:** {current_week} | **Weeks Remaining:** {weeks_remaining}",
             color=discord.Color.blue(),
             timestamp=datetime.now()
         )
         
-        # Compliant members
+        # Compliant members (met BOTH requirements)
         if compliant:
-            compliant_str = "\n".join([f"✅ **{m['name']}**: ${m['volume']}" for m in compliant[:10]])
+            compliant_str = ""
+            for m in compliant[:10]:
+                team = m.get('team', '?')
+                compliant_str += f"✅ **{m['name']}** ({team}): ${m['volume']} vol, ${m.get('own_team_bet', 0)} own team\n"
             if len(compliant) > 10:
-                compliant_str += f"\n... and {len(compliant) - 10} more"
-            embed.add_field(name=f"✅ Met Requirement ({len(compliant)})", value=compliant_str, inline=False)
+                compliant_str += f"... and {len(compliant) - 10} more"
+            embed.add_field(name=f"✅ Fully Compliant ({len(compliant)})", value=compliant_str or "None yet", inline=False)
         
         # Non-compliant members
         if non_compliant:
-            non_compliant_str = "\n".join([f"❌ **{m['name']}**: ${m['volume']} (need ${m['remaining']} more)" 
-                                           for m in non_compliant[:10]])
+            non_compliant_str = ""
+            for m in non_compliant[:10]:
+                team = m.get('team', '?')
+                vol_status = "✅" if m.get('met_volume_requirement', False) else "❌"
+                own_status = "✅" if m.get('met_own_team_requirement', False) else "❌"
+                non_compliant_str += f"**{m['name']}** ({team}): {vol_status}${m['volume']}vol {own_status}${m.get('own_team_bet', 0)}own\n"
             if len(non_compliant) > 10:
-                non_compliant_str += f"\n... and {len(non_compliant) - 10} more"
-            embed.add_field(name=f"❌ Below Requirement ({len(non_compliant)})", value=non_compliant_str, inline=False)
+                non_compliant_str += f"... and {len(non_compliant) - 10} more"
+            embed.add_field(name=f"❌ Needs Action ({len(non_compliant)})", value=non_compliant_str, inline=False)
         
-        # Check if user is NFC and show their status
+        # Check if user is NFC and show their detailed status
         user_status = next((m for m in nfc_status if m['user_id'] == interaction.user.id), None)
         if user_status:
-            status_emoji = "✅" if user_status['met_requirement'] else "❌"
-            remaining_text = 'Requirement met! 🎉' if user_status['met_requirement'] else f"Need ${user_status['remaining']} more"
+            team = user_status.get('team', '?')
+            team_name = NFC_TEAM_MARKET_NAMES.get(team, team)
+            
+            vol_emoji = "✅" if user_status.get('met_volume_requirement', False) else "❌"
+            own_emoji = "✅" if user_status.get('met_own_team_requirement', False) else "❌"
+            overall_emoji = "✅" if user_status['met_requirement'] else "❌"
+            
+            status_text = f"{vol_emoji} **Total Volume:** ${user_status['volume']} / ${NFC_MIN_VOLUME_REQUIREMENT}\n"
+            status_text += f"{own_emoji} **{team_name} Playoff Bet:** ${user_status.get('own_team_bet', 0)} / ${NFC_OWN_TEAM_PLAYOFF_BET}\n\n"
+            
+            if user_status['met_requirement']:
+                status_text += "🎉 **All requirements met!**"
+            else:
+                if not user_status.get('met_volume_requirement', False):
+                    status_text += f"• Need ${user_status['remaining']} more total volume\n"
+                if not user_status.get('met_own_team_requirement', False):
+                    status_text += f"• Need ${user_status.get('own_team_remaining', NFC_OWN_TEAM_PLAYOFF_BET)} more on {team_name} playoffs"
+            
             embed.add_field(
-                name="📍 Your Status",
-                value=f"{status_emoji} Volume: ${user_status['volume']} / ${NFC_MIN_VOLUME_REQUIREMENT}\n{remaining_text}",
+                name=f"📍 Your Status ({team_name})",
+                value=status_text,
                 inline=False
             )
+        
+        await interaction.followup.send(embed=embed)
+    
+    @app_commands.command(name="predictionunpaid", description="View unpaid prediction market payments owed to you or by you")
+    async def prediction_unpaid(self, interaction: discord.Interaction):
+        """View unpaid prediction market payments."""
+        await interaction.response.defer(ephemeral=True)
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Get payments owed TO the user (they are the winner)
+        cursor.execute('''
+            SELECT p.payment_id, p.market_id, p.loser_id, p.amount, p.created_at, m.question
+            FROM prediction_payments p
+            JOIN prediction_markets m ON p.market_id = m.market_id
+            WHERE p.winner_id = ? AND p.guild_id = ? AND p.is_paid = 0
+        ''', (interaction.user.id, interaction.guild.id))
+        
+        owed_to_user = cursor.fetchall()
+        
+        # Get payments owed BY the user (they are the loser)
+        cursor.execute('''
+            SELECT p.payment_id, p.market_id, p.winner_id, p.amount, p.created_at, m.question
+            FROM prediction_payments p
+            JOIN prediction_markets m ON p.market_id = m.market_id
+            WHERE p.loser_id = ? AND p.guild_id = ? AND p.is_paid = 0
+        ''', (interaction.user.id, interaction.guild.id))
+        
+        owed_by_user = cursor.fetchall()
+        conn.close()
+        
+        embed = discord.Embed(
+            title="💰 Your Prediction Market Payments",
+            color=discord.Color.gold(),
+            timestamp=datetime.now()
+        )
+        
+        # Payments owed TO user
+        if owed_to_user:
+            owed_str = ""
+            total_owed_to = 0
+            for payment_id, market_id, loser_id, amount, created_at, question in owed_to_user:
+                loser = interaction.guild.get_member(loser_id)
+                loser_name = loser.display_name if loser else f"User {loser_id}"
+                owed_str += f"• **${amount}** from {loser_name} ({market_id})\n"
+                total_owed_to += amount
+            embed.add_field(
+                name=f"💵 Owed TO You (${total_owed_to})",
+                value=owed_str[:1024],
+                inline=False
+            )
+        else:
+            embed.add_field(name="💵 Owed TO You", value="No pending payments", inline=False)
+        
+        # Payments owed BY user
+        if owed_by_user:
+            owed_str = ""
+            total_owed_by = 0
+            for payment_id, market_id, winner_id, amount, created_at, question in owed_by_user:
+                winner = interaction.guild.get_member(winner_id)
+                winner_name = winner.display_name if winner else f"User {winner_id}"
+                owed_str += f"• **${amount}** to {winner_name} ({market_id}) - `/predictionpaid {payment_id}`\n"
+                total_owed_by += amount
+            embed.add_field(
+                name=f"💸 Owed BY You (${total_owed_by})",
+                value=owed_str[:1024],
+                inline=False
+            )
+        else:
+            embed.add_field(name="💸 Owed BY You", value="No pending payments", inline=False)
+        
+        await interaction.followup.send(embed=embed)
+    
+    @app_commands.command(name="predictionpaid", description="Mark a prediction market payment as paid")
+    @app_commands.describe(payment_id="The payment ID to mark as paid")
+    async def prediction_paid(self, interaction: discord.Interaction, payment_id: int):
+        """Mark a prediction market payment as paid."""
+        await interaction.response.defer()
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Get the payment
+        cursor.execute('''
+            SELECT p.market_id, p.winner_id, p.loser_id, p.amount, p.is_paid, m.question
+            FROM prediction_payments p
+            JOIN prediction_markets m ON p.market_id = m.market_id
+            WHERE p.payment_id = ? AND p.guild_id = ?
+        ''', (payment_id, interaction.guild.id))
+        
+        payment = cursor.fetchone()
+        
+        if not payment:
+            await interaction.followup.send(f"❌ Payment #{payment_id} not found.", ephemeral=True)
+            conn.close()
+            return
+        
+        market_id, winner_id, loser_id, amount, is_paid, question = payment
+        
+        if is_paid:
+            await interaction.followup.send(f"✅ Payment #{payment_id} is already marked as paid.", ephemeral=True)
+            conn.close()
+            return
+        
+        # Only the winner can mark as paid (they received the money)
+        if interaction.user.id != winner_id:
+            winner = interaction.guild.get_member(winner_id)
+            winner_name = winner.display_name if winner else f"User {winner_id}"
+            await interaction.followup.send(
+                f"❌ Only **{winner_name}** (the winner) can confirm receipt of this payment.",
+                ephemeral=True
+            )
+            conn.close()
+            return
+        
+        # Mark as paid
+        cursor.execute('''
+            UPDATE prediction_payments
+            SET is_paid = 1, paid_at = ?
+            WHERE payment_id = ?
+        ''', (datetime.now().isoformat(), payment_id))
+        
+        conn.commit()
+        conn.close()
+        
+        loser = interaction.guild.get_member(loser_id)
+        loser_name = loser.display_name if loser else f"User {loser_id}"
+        
+        embed = discord.Embed(
+            title="✅ Payment Confirmed!",
+            description=f"**Market:** {market_id}\n"
+                       f"**Question:** {question}\n\n"
+                       f"**${amount}** from **{loser_name}** has been marked as paid.",
+            color=discord.Color.green(),
+            timestamp=datetime.now()
+        )
+        
+        await interaction.followup.send(embed=embed)
+        
+        # DM the loser to confirm
+        if loser:
+            try:
+                dm_embed = discord.Embed(
+                    title="✅ Payment Confirmed",
+                    description=f"**{interaction.user.display_name}** has confirmed receipt of your **${amount}** payment for market **{market_id}**.\n\n"
+                               f"Question: {question}",
+                    color=discord.Color.green()
+                )
+                await loser.send(embed=dm_embed)
+            except discord.Forbidden:
+                pass
+    
+    @app_commands.command(name="allpredictionunpaid", description="[Admin] View all unpaid prediction market payments")
+    @app_commands.default_permissions(administrator=True)
+    async def all_prediction_unpaid(self, interaction: discord.Interaction):
+        """View all unpaid prediction market payments in the server."""
+        await interaction.response.defer()
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT p.payment_id, p.market_id, p.winner_id, p.loser_id, p.amount, p.created_at, m.question
+            FROM prediction_payments p
+            JOIN prediction_markets m ON p.market_id = m.market_id
+            WHERE p.guild_id = ? AND p.is_paid = 0
+            ORDER BY p.created_at DESC
+        ''', (interaction.guild.id,))
+        
+        payments = cursor.fetchall()
+        conn.close()
+        
+        if not payments:
+            await interaction.followup.send("✅ No unpaid prediction market payments!")
+            return
+        
+        total_unpaid = sum(p[4] for p in payments)
+        
+        embed = discord.Embed(
+            title="💰 All Unpaid Prediction Market Payments",
+            description=f"**{len(payments)} unpaid payment(s)** totaling **${total_unpaid}**",
+            color=discord.Color.orange(),
+            timestamp=datetime.now()
+        )
+        
+        payments_str = ""
+        for payment_id, market_id, winner_id, loser_id, amount, created_at, question in payments[:15]:
+            winner = interaction.guild.get_member(winner_id)
+            loser = interaction.guild.get_member(loser_id)
+            winner_name = winner.display_name if winner else f"User {winner_id}"
+            loser_name = loser.display_name if loser else f"User {loser_id}"
+            payments_str += f"#{payment_id}: {loser_name} → {winner_name} **${amount}** ({market_id})\n"
+        
+        if len(payments) > 15:
+            payments_str += f"\n... and {len(payments) - 15} more"
+        
+        embed.add_field(name="Pending Payments", value=payments_str or "None", inline=False)
         
         await interaction.followup.send(embed=embed)
 
