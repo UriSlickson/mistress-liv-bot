@@ -201,11 +201,11 @@ class PredictionMarketsCog(commands.Cog):
         return f"MKT{count + 1:03d}"
     
     def _validate_trade_amount(self, amount: int) -> Tuple[bool, str]:
-        """Validate trade amount is in $10 increments."""
+        """Validate trade amount is in $5 increments."""
         if amount < MIN_TRADE_AMOUNT:
             return False, f"Minimum trade is ${MIN_TRADE_AMOUNT}"
         if amount % TRADE_INCREMENT != 0:
-            return False, f"Trades must be in ${TRADE_INCREMENT} increments (e.g., $10, $20, $30)"
+            return False, f"Trades must be in ${TRADE_INCREMENT} increments (e.g., $5, $10, $15)"
         return True, ""
     
     def _get_user_position(self, market_id: str, user_id: int) -> Dict:
@@ -672,8 +672,8 @@ class PredictionMarketsCog(commands.Cog):
         
         embed.add_field(
             name="📈 How to Trade",
-            value=f"`/trade {market_id} Yes buy 10 {initial_odds}` - Buy $10 of Yes at {initial_odds}¢\n"
-                  f"`/trade {market_id} No buy 20 {100-initial_odds}` - Buy $20 of No at {100-initial_odds}¢",
+            value=f"`/trade {market_id} Yes buy 5 {initial_odds}` - Buy $5 of Yes at {initial_odds}¢\n"
+                  f"`/trade {market_id} No buy 10 {100-initial_odds}` - Buy $10 of No at {100-initial_odds}¢",
             inline=False
         )
         
@@ -834,7 +834,7 @@ class PredictionMarketsCog(commands.Cog):
         market_id="Market ID (e.g., MKT001)",
         side="Yes or No",
         direction="Buy or Sell",
-        amount="Dollar amount ($10 increments)",
+        amount="Dollar amount ($5 increments)",
         limit_price="Max price for buy / Min price for sell (in cents, 5-95)"
     )
     @app_commands.choices(
