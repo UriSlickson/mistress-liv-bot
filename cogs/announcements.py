@@ -67,20 +67,29 @@ class AnnouncementsCog(commands.Cog):
         embed.set_footer(text=f"Posted by {interaction.user.display_name}")
         
         posted_to = []
+        failed_channels = []
         
-        # Post to townsquare
+        # Post to townsquare with error handling
         if townsquare:
-            await townsquare.send(embed=embed)
-            posted_to.append(townsquare.mention)
-            logger.info(f"Posted announcement to #townsquare")
+            try:
+                await townsquare.send(embed=embed)
+                posted_to.append(townsquare.mention)
+                logger.info(f"Posted announcement to #townsquare")
+            except Exception as e:
+                failed_channels.append(f"#townsquare ({str(e)[:30]})")
+                logger.error(f"Failed to post to #townsquare: {e}")
         else:
             logger.warning("Could not find #townsquare channel")
         
-        # Post to announcements
+        # Post to announcements with error handling
         if announcements:
-            await announcements.send(embed=embed)
-            posted_to.append(announcements.mention)
-            logger.info(f"Posted announcement to #announcements")
+            try:
+                await announcements.send(embed=embed)
+                posted_to.append(announcements.mention)
+                logger.info(f"Posted announcement to #announcements")
+            except Exception as e:
+                failed_channels.append(f"#announcements ({str(e)[:30]})")
+                logger.error(f"Failed to post to #announcements: {e}")
         else:
             logger.warning("Could not find #announcements channel")
         
@@ -91,7 +100,7 @@ class AnnouncementsCog(commands.Cog):
         failed_members = []
         
         dm_embed = discord.Embed(
-            title="📢 Mistress LIV Announcement",
+            title="📢 Golden Goose Announcement",
             description=message,
             color=discord.Color.blue()
         )
@@ -121,6 +130,8 @@ class AnnouncementsCog(commands.Cog):
                 logger.error(f"Failed to DM {team_id} owner: {e}")
         
         result = f"✅ Posted to: {', '.join(posted_to) if posted_to else 'No channels found'}"
+        if failed_channels:
+            result += f"\n⚠️ Failed channels: {', '.join(failed_channels)}"
         result += f"\n📬 DMed {dm_count} league members"
         if dm_failed > 0:
             result += f" ({dm_failed} failed)"
@@ -151,21 +162,35 @@ class AnnouncementsCog(commands.Cog):
         embed.set_footer(text=f"Posted by {interaction.user.display_name}")
         
         posted_to = []
+        failed_channels = []
         
-        # Post to townsquare
+        # Post to townsquare with error handling
         if townsquare:
-            await townsquare.send(embed=embed)
-            posted_to.append(townsquare.mention)
+            try:
+                await townsquare.send(embed=embed)
+                posted_to.append(townsquare.mention)
+            except Exception as e:
+                failed_channels.append(f"#townsquare ({str(e)[:30]})")
+                logger.error(f"Failed to post to #townsquare: {e}")
         
-        # Post to announcements
+        # Post to announcements with error handling
         if announcements:
-            await announcements.send(embed=embed)
-            posted_to.append(announcements.mention)
+            try:
+                await announcements.send(embed=embed)
+                posted_to.append(announcements.mention)
+            except Exception as e:
+                failed_channels.append(f"#announcements ({str(e)[:30]})")
+                logger.error(f"Failed to post to #announcements: {e}")
         
+        result = ""
         if posted_to:
-            await interaction.followup.send(f"✅ Posted to: {', '.join(posted_to)}", ephemeral=True)
-        else:
-            await interaction.followup.send("❌ Could not find #townsquare or #announcements channels", ephemeral=True)
+            result = f"✅ Posted to: {', '.join(posted_to)}"
+        if failed_channels:
+            result += f"\n⚠️ Failed channels: {', '.join(failed_channels)}"
+        if not posted_to and not failed_channels:
+            result = "❌ Could not find #townsquare or #announcements channels"
+        
+        await interaction.followup.send(result, ephemeral=True)
     
     @announce_group.command(name="dm", description="DM all league members only")
     @app_commands.describe(message="The message to send")
@@ -178,7 +203,7 @@ class AnnouncementsCog(commands.Cog):
         registered_owners = self.get_registered_owners()
         
         embed = discord.Embed(
-            title="📬 Message from Mistress LIV",
+            title="📬 Message from Golden Goose",
             description=message,
             color=discord.Color.blue()
         )
